@@ -472,3 +472,108 @@ class DataFetcher:
             "is_bullish": is_bullish,
             "broken_ma": broken_ma
         }
+
+    def get_institutional_investors(self, stock_id: str, days: int = 5) -> Dict:
+        """
+        獲取三大法人買賣超資料
+        Returns: {
+            "foreign": {"today": int, "sum_days": int},  # 外資
+            "investment_trust": {"today": int, "sum_days": int},  # 投信
+            "dealer": {"today": int, "sum_days": int},  # 自營商
+            "total": {"today": int, "sum_days": int}  # 合計
+        }
+        單位: 張
+        """
+        try:
+            from FinMind.data import DataLoader
+            loader = DataLoader()
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+
+            df = loader.taiwan_stock_institutional_investors(
+                stock_id=stock_id,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if df.empty:
+                return {}
+
+            # 取最近 N 天的資料
+            df = df.tail(days * 3)  # 每天有多筆資料 (外資/投信/自營商)
+
+            result = {
+                "foreign": {"today": 0, "sum_days": 0},
+                "investment_trust": {"today": 0, "sum_days": 0},
+                "dealer": {"today": 0, "sum_days": 0},
+                "total": {"today": 0, "sum_days": 0}
+            }
+
+            # 取得最新日期
+            latest_date = df["date"].max()
+
+            # 外資 (Foreign_Investor)
+            foreign_df = df[df["name"].str.contains("外資", na=False)]
+            if not foreign_df.empty:
+                today_foreign = foreign_df[foreign_df["date"] == latest_date]["buy"].sum() - \
+                               foreign_df[foreign_df["date"] == latest_date]["sell"].sum()
+                result["foreign"]["today"] = int(today_foreign / 1000)  # 股 -> 張
+                result["foreign"]["sum_days"] = int((foreign_df["buy"].sum() - foreign_df["sell"].sum()) / 1000)
+
+            # 投信 (Investment_Trust)
+            trust_df = df[df["name"].str.contains("投信", na=False)]
+            if not trust_df.empty:
+                today_trust = trust_df[trust_df["date"] == latest_date]["buy"].sum() - \
+                             trust_df[trust_df["date"] == latest_date]["sell"].sum()
+                result["investment_trust"]["today"] = int(today_trust / 1000)
+                result["investment_trust"]["sum_days"] = int((trust_df["buy"].sum() - trust_df["sell"].sum()) / 1000)
+
+            # 自營商 (Dealer)
+            dealer_df = df[df["name"].str.contains("自營商", na=False)]
+            if not dealer_df.empty:
+                today_dealer = dealer_df[dealer_df["date"] == latest_date]["buy"].sum() - \
+                              dealer_df[dealer_df["date"] == latest_date]["sell"].sum()
+                result["dealer"]["today"] = int(today_dealer / 1000)
+                result["dealer"]["sum_days"] = int((dealer_df["buy"].sum() - dealer_df["sell"].sum()) / 1000)
+
+            # 合計
+            result["total"]["today"] = result["foreign"]["today"] + result["investment_trust"]["today"] + result["dealer"]["today"]
+            result["total"]["sum_days"] = result["foreign"]["sum_days"] + result["investment_trust"]["sum_days"] + result["dealer"]["sum_days"]
+
+            return result
+
+        except Exception as e:
+            logger.debug(f"獲取 {stock_id} 三大法人買賣超失敗: {e}")
+            return {}
+
+    def get_institutional_investors_batch(self, stock_ids: List[str], days: int = 5) -> pd.DataFrame:
+        """
+        批次獲取多檔股票的三大法人買賣超資料
+        Returns: DataFrame with columns [stock_id, foreign_today, foreign_sum, trust_today, trust_sum, total_today, total_sum]
+        """
+        rows = []
+        for stock_id in stock_ids:
+            data = self.get_institutional_investors(stock_id, days)
+            if data:
+                rows.append({
+                    "stock_id": stock_id,
+                    "foreign_today": data["foreign"]["today"],
+                    "foreign_sum": data["foreign"]["sum_days"],
+                    "trust_today": data["investment_trust"]["today"],
+                    "trust_sum": data["investment_trust"]["sum_days"],
+                    "dealer_today": data["dealer"]["today"],
+                    "dealer_sum": data["dealer"]["sum_days"],
+                    "total_today": data["total"]["today"],
+                    "total_sum": data["total"]["sum_days"]
+                })
+            else:
+                rows.append({
+                    "stock_id": stock_id,
+                    "foreign_today": 0, "foreign_sum": 0,
+                    "trust_today": 0, "trust_sum": 0,
+                    "dealer_today": 0, "dealer_sum": 0,
+                    "total_today": 0, "total_sum": 0
+                })
+
+        return pd.DataFrame(rows)

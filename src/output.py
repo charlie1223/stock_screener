@@ -15,8 +15,13 @@ class TerminalDisplay:
     """終端機顯示器"""
 
     @staticmethod
-    def display_results(df: pd.DataFrame):
-        """在終端機顯示篩選結果"""
+    def display_results(df: pd.DataFrame, institutional_data: pd.DataFrame = None):
+        """
+        在終端機顯示篩選結果
+        Args:
+            df: 篩選結果 DataFrame
+            institutional_data: 三大法人買賣超資料 DataFrame (可選)
+        """
         print("\n" + "=" * 80)
         print(f"  台股尾盤選股結果 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 80)
@@ -25,6 +30,10 @@ class TerminalDisplay:
             print("\n  今日無符合條件的股票")
             print("=" * 80)
             return
+
+        # 合併法人資料
+        if institutional_data is not None and not institutional_data.empty:
+            df = df.merge(institutional_data, on="stock_id", how="left")
 
         # 準備顯示欄位
         display_columns = [
@@ -84,7 +93,47 @@ class TerminalDisplay:
             # 簡單表格格式
             print("\n" + display_df.to_string(index=False))
 
-        print(f"\n  共篩選出 {len(df)} 檔股票符合八大條件")
+        print(f"\n  共篩選出 {len(df)} 檔股票符合條件")
+        print("=" * 80)
+
+        # 顯示三大法人資訊
+        if institutional_data is not None and not institutional_data.empty:
+            TerminalDisplay._display_institutional_info(df)
+
+    @staticmethod
+    def _display_institutional_info(df: pd.DataFrame):
+        """顯示三大法人買賣超資訊"""
+        # 檢查是否有法人資料欄位
+        if "foreign_today" not in df.columns:
+            return
+
+        print("\n" + "-" * 80)
+        print("  【三大法人買賣超參考】 (單位: 張)")
+        print("-" * 80)
+        print(f"  {'代號':<8} {'名稱':<12} {'外資今日':>10} {'外資5日':>10} {'投信今日':>10} {'投信5日':>10} {'合計':>10}")
+        print("-" * 80)
+
+        for _, row in df.iterrows():
+            stock_id = row.get("stock_id", "")
+            stock_name = row.get("stock_name", "")[:6]  # 截斷名稱
+
+            foreign_today = row.get("foreign_today", 0)
+            foreign_sum = row.get("foreign_sum", 0)
+            trust_today = row.get("trust_today", 0)
+            trust_sum = row.get("trust_sum", 0)
+            total_sum = row.get("total_sum", 0)
+
+            # 格式化數字，正數加 + 號
+            def fmt(x):
+                if pd.isna(x) or x == 0:
+                    return "0"
+                return f"+{int(x):,}" if x > 0 else f"{int(x):,}"
+
+            print(f"  {stock_id:<8} {stock_name:<12} {fmt(foreign_today):>10} {fmt(foreign_sum):>10} "
+                  f"{fmt(trust_today):>10} {fmt(trust_sum):>10} {fmt(total_sum):>10}")
+
+        print("-" * 80)
+        print("  說明: 外資/投信連續買超通常代表法人看好")
         print("=" * 80)
 
 
@@ -110,7 +159,10 @@ class CSVExporter:
         output_columns = [
             "stock_id", "stock_name", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
-            "open", "high", "low", "prev_close", "market"
+            "open", "high", "low", "prev_close", "market",
+            # 三大法人欄位
+            "foreign_today", "foreign_sum", "trust_today", "trust_sum",
+            "dealer_today", "dealer_sum", "total_today", "total_sum"
         ]
         available_cols = [c for c in output_columns if c in df.columns]
         output_df = df[available_cols].copy()

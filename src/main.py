@@ -61,8 +61,19 @@ def run_screener(force: bool = False):
     pipeline = ScreeningPipeline()
     results = pipeline.run()
 
+    # 獲取三大法人買賣超資料 (作為參考資訊)
+    institutional_data = None
+    if not results.empty:
+        logging.info("正在獲取三大法人買賣超資料...")
+        stock_ids = results["stock_id"].tolist()
+        institutional_data = pipeline.data_fetcher.get_institutional_investors_batch(stock_ids, days=5)
+
+        # 合併法人資料到結果
+        if not institutional_data.empty:
+            results = results.merge(institutional_data, on="stock_id", how="left")
+
     # 終端機顯示
-    TerminalDisplay.display_results(results)
+    TerminalDisplay.display_results(results, institutional_data)
 
     # 輸出 CSV
     if not results.empty:

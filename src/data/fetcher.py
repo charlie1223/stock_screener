@@ -385,3 +385,90 @@ class DataFetcher:
         except Exception as e:
             logger.error(f"獲取大盤漲跌幅失敗: {e}")
             return None
+
+    def get_index_historical_data(self, index_type: str = "TWSE", days: int = 60) -> pd.DataFrame:
+        """
+        獲取大盤/OTC 指數歷史資料
+        index_type: "TWSE" (加權指數) 或 "OTC" (櫃買指數)
+        Returns: DataFrame with columns [date, close]
+        使用 0050/0051 ETF 作為大盤/OTC 指數的代理
+        """
+        try:
+            from FinMind.data import DataLoader
+            loader = DataLoader()
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+
+            # 使用 ETF 作為指數代理
+            # 0050 元大台灣50 追蹤加權指數
+            # 006201 元大富櫃50 追蹤櫃買指數
+            if index_type == "TWSE":
+                stock_id = "0050"
+            else:
+                stock_id = "006201"
+
+            df = loader.taiwan_stock_daily(
+                stock_id=stock_id,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if df.empty:
+                return pd.DataFrame()
+
+            df = df.rename(columns={"close": "close"})
+            df = df[["date", "close"]].tail(days)
+            return df
+
+        except Exception as e:
+            logger.debug(f"獲取 {index_type} 指數歷史數據失敗: {e}")
+            return pd.DataFrame()
+
+    def get_index_ma_status(self, index_type: str = "TWSE", ma_periods: List[int] = [5, 10, 20, 60]) -> Dict:
+        """
+        獲取大盤/OTC 指數均線狀態
+        Returns: {
+            "current_price": float,
+            "ma_values": {5: float, 10: float, ...},
+            "above_ma": {5: bool, 10: bool, ...},
+            "is_bullish": bool,  # 是否多頭排列
+            "broken_ma": List[int]  # 跌破的均線
+        }
+        """
+        hist_data = self.get_index_historical_data(index_type, days=max(ma_periods) + 10)
+
+        if hist_data.empty or len(hist_data) < max(ma_periods):
+            return {}
+
+        current_price = hist_data["close"].iloc[-1]
+        ma_values = {}
+        above_ma = {}
+        broken_ma = []
+
+        for period in ma_periods:
+            if len(hist_data) >= period:
+                ma_val = hist_data["close"].tail(period).mean()
+                ma_values[period] = round(ma_val, 2)
+                above_ma[period] = current_price >= ma_val
+                if not above_ma[period]:
+                    broken_ma.append(period)
+
+        # 判斷多頭排列: 短均線 > 長均線
+        is_bullish = True
+        sorted_periods = sorted(ma_periods)
+        for i in range(len(sorted_periods) - 1):
+            short_ma = ma_values.get(sorted_periods[i], 0)
+            long_ma = ma_values.get(sorted_periods[i + 1], 0)
+            if short_ma < long_ma:
+                is_bullish = False
+                break
+
+        return {
+            "index_type": index_type,
+            "current_price": round(current_price, 2),
+            "ma_values": ma_values,
+            "above_ma": above_ma,
+            "is_bullish": is_bullish,
+            "broken_ma": broken_ma
+        }

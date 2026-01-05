@@ -307,3 +307,143 @@ class IntradayHighScreener(BaseScreener):
         df["intraday_strong"] = mask
 
         return df[mask].reset_index(drop=True)
+
+
+class MASupportScreener(BaseScreener):
+    """步驟9: 均線支撐篩選 - 站穩關鍵均線"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="均線支撐", step_number=9)
+        self.data_fetcher = data_fetcher
+        self.support_ma_periods = [5, 10, 20, 60]  # 支撐均線
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        ma_support_valid = []
+        support_ma_info = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+            low_price = row["low"]
+
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=70)
+            if hist_data.empty or len(hist_data) < 60:
+                ma_support_valid.append(False)
+                support_ma_info.append("")
+                continue
+
+            closes = hist_data["close"]
+
+            # 計算各均線
+            ma_values = {}
+            for period in self.support_ma_periods:
+                if len(closes) >= period:
+                    ma_values[period] = closes.rolling(period).mean().iloc[-1]
+
+            # 檢查是否站穩均線支撐
+            # 條件: 當日最低價在某條均線上方 (允許跌破不超過 1%)
+            support_found = False
+            support_info = ""
+
+            for period in self.support_ma_periods:
+                if period in ma_values:
+                    ma_val = ma_values[period]
+                    # 最低價在均線上方，或跌破不超過1%
+                    if low_price >= ma_val * 0.99:
+                        support_found = True
+                        support_info = f"MA{period}支撐"
+                        break
+
+            ma_support_valid.append(support_found)
+            support_ma_info.append(support_info)
+
+        df["ma_support"] = ma_support_valid
+        df["support_info"] = support_ma_info
+
+        return df[df["ma_support"]].reset_index(drop=True)
+
+
+class BullishPatternScreener(BaseScreener):
+    """步驟10: 多方型態篩選 - 只留型態是多方的標的"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="多方型態", step_number=10)
+        self.data_fetcher = data_fetcher
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        bullish_pattern = []
+        pattern_info = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=60)
+            if hist_data.empty or len(hist_data) < 20:
+                bullish_pattern.append(False)
+                pattern_info.append("")
+                continue
+
+            closes = hist_data["close"]
+            highs = hist_data["high"]
+            lows = hist_data["low"]
+
+            # 計算均線
+            ma5 = closes.rolling(5).mean()
+            ma10 = closes.rolling(10).mean()
+            ma20 = closes.rolling(20).mean()
+
+            # 多方型態判斷條件
+            conditions_met = []
+
+            # 1. 短期均線向上
+            if len(ma5) >= 5:
+                ma5_slope = ma5.iloc[-1] > ma5.iloc[-5]
+                if ma5_slope:
+                    conditions_met.append("MA5向上")
+
+            # 2. 價格在 MA20 上方
+            if len(ma20) >= 1 and not pd.isna(ma20.iloc[-1]):
+                if current_price > ma20.iloc[-1]:
+                    conditions_met.append("站上MA20")
+
+            # 3. 近期創新高 (20日內)
+            if len(highs) >= 20:
+                recent_high = highs.tail(20).max()
+                if current_price >= recent_high * 0.97:  # 接近20日高點
+                    conditions_met.append("近20日高")
+
+            # 4. 底部墊高 (近期低點高於更早的低點)
+            if len(lows) >= 20:
+                recent_low = lows.tail(10).min()
+                earlier_low = lows.tail(20).head(10).min()
+                if recent_low > earlier_low:
+                    conditions_met.append("底部墊高")
+
+            # 5. 均線多頭排列
+            if len(ma5) >= 1 and len(ma10) >= 1 and len(ma20) >= 1:
+                try:
+                    if ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1]:
+                        conditions_met.append("均線多頭")
+                except:
+                    pass
+
+            # 判斷: 至少符合 3 個條件才算多方型態
+            is_bullish = len(conditions_met) >= 3
+            bullish_pattern.append(is_bullish)
+            pattern_info.append(" | ".join(conditions_met) if conditions_met else "")
+
+        df["bullish_pattern"] = bullish_pattern
+        df["pattern_info"] = pattern_info
+
+        return df[df["bullish_pattern"]].reset_index(drop=True)

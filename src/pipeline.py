@@ -136,6 +136,8 @@ class ScreeningPipeline:
         self.screeners = self._init_screeners()
         self.stats = []
         self.market_status = None
+        # 新增：儲存每一步篩選後的結果
+        self.step_results = {}
 
     def _init_screeners(self) -> List:
         """初始化篩選器"""
@@ -187,8 +189,10 @@ class ScreeningPipeline:
 
         logger.info(f"共獲取 {len(df)} 檔股票即時報價")
 
-        # 2. 依序執行篩選步驟
+        # 2. 依序執行篩選步驟，並儲存每一步的結果
         self.stats = []
+        self.step_results = {}
+
         for screener in self.screeners:
             if df.empty:
                 logger.warning(f"在步驟 {screener.step_number} 前已無剩餘股票")
@@ -197,10 +201,20 @@ class ScreeningPipeline:
             df = screener(df)
             self.stats.append(screener.get_stats())
 
+            # 儲存這一步的結果
+            self.step_results[screener.step_number] = {
+                "name": screener.name,
+                "data": df.copy() if not df.empty else pd.DataFrame()
+            }
+
         # 3. 輸出結果摘要
         self._print_summary()
 
         return df
+
+    def get_step_results(self) -> Dict:
+        """取得每一步篩選的結果"""
+        return self.step_results
 
     def _print_summary(self):
         """輸出篩選摘要"""

@@ -15,6 +15,90 @@ class TerminalDisplay:
     """終端機顯示器"""
 
     @staticmethod
+    def display_step_results(step_results: dict, max_stocks_per_step: int = 20):
+        """
+        顯示每一步篩選的結果
+        Args:
+            step_results: 每一步篩選的結果字典 {step_number: {"name": str, "data": DataFrame}}
+            max_stocks_per_step: 每步最多顯示的股票數量
+        """
+        print("\n" + "=" * 80)
+        print(f"  逐步篩選結果 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 80)
+
+        if not step_results:
+            print("\n  無篩選結果")
+            print("=" * 80)
+            return
+
+        for step_num in sorted(step_results.keys()):
+            step_info = step_results[step_num]
+            step_name = step_info["name"]
+            df = step_info["data"]
+
+            print(f"\n{'─' * 80}")
+            print(f"  【步驟 {step_num}】{step_name}")
+            print(f"{'─' * 80}")
+
+            if df.empty:
+                print("  無符合條件的股票")
+                continue
+
+            stock_count = len(df)
+            print(f"  符合條件: {stock_count} 檔")
+
+            # 準備顯示的資料
+            display_df = df.head(max_stocks_per_step).copy()
+
+            # 選擇顯示欄位
+            display_columns = ["stock_id", "stock_name", "price", "change_pct"]
+            available_cols = [c for c in display_columns if c in display_df.columns]
+
+            if not available_cols:
+                # 如果沒有標準欄位，顯示前幾個欄位
+                available_cols = list(display_df.columns)[:4]
+
+            display_df = display_df[available_cols].copy()
+
+            # 格式化數值
+            if "change_pct" in display_df.columns:
+                display_df["change_pct"] = display_df["change_pct"].apply(
+                    lambda x: f"+{x:.2f}%" if pd.notna(x) and x >= 0 else (f"{x:.2f}%" if pd.notna(x) else "-")
+                )
+            if "price" in display_df.columns:
+                display_df["price"] = display_df["price"].apply(
+                    lambda x: f"{x:.2f}" if pd.notna(x) else "-"
+                )
+
+            # 重新命名欄位
+            column_names = {
+                "stock_id": "代號",
+                "stock_name": "名稱",
+                "price": "現價",
+                "change_pct": "漲幅"
+            }
+            display_df = display_df.rename(columns=column_names)
+
+            # 顯示表格
+            try:
+                from tabulate import tabulate
+                print(tabulate(
+                    display_df,
+                    headers="keys",
+                    tablefmt="simple",
+                    showindex=False,
+                    numalign="right",
+                    stralign="left"
+                ))
+            except ImportError:
+                print(display_df.to_string(index=False))
+
+            if stock_count > max_stocks_per_step:
+                print(f"  ... 還有 {stock_count - max_stocks_per_step} 檔未顯示")
+
+        print("\n" + "=" * 80)
+
+    @staticmethod
     def display_results(df: pd.DataFrame, institutional_data: pd.DataFrame = None):
         """
         在終端機顯示篩選結果

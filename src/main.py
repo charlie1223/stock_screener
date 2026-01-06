@@ -61,6 +61,11 @@ def run_screener(force: bool = False):
     pipeline = ScreeningPipeline()
     results = pipeline.run()
 
+    # 顯示逐步篩選結果
+    step_results = pipeline.get_step_results()
+    if step_results:
+        TerminalDisplay.display_step_results(step_results)
+
     # 獲取三大法人買賣超資料 (作為參考資訊)
     institutional_data = None
     if not results.empty:
@@ -72,7 +77,7 @@ def run_screener(force: bool = False):
         if not institutional_data.empty:
             results = results.merge(institutional_data, on="stock_id", how="left")
 
-    # 終端機顯示
+    # 終端機顯示最終結果
     TerminalDisplay.display_results(results, institutional_data)
 
     # 輸出 CSV

@@ -26,7 +26,7 @@ SCREENING_START = time(13, 0)   # 尾盤篩選開始時間
 SCREENING_PARAMS = {
     # 步驟1: 漲幅範圍
     "price_change_min": 3.0,    # 最小漲幅 %
-    "price_change_max": 5.0,    # 最大漲幅 %
+    "price_change_max": 100.0,  # 最大漲幅 % (改為無上限)
 
     # 步驟2: 量比門檻
     "volume_ratio_min": 1.0,    # 量比 > 1

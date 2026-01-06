@@ -11,10 +11,10 @@ from config.settings import SCREENING_PARAMS
 
 
 class PriceChangeScreener(BaseScreener):
-    """步驟1: 漲幅 3%-5% 篩選"""
+    """步驟1: 漲幅 >= 3% 篩選"""
 
     def __init__(self):
-        super().__init__(name="漲幅 3%-5%", step_number=1)
+        super().__init__(name="漲幅 >= 3%", step_number=1)
         self.min_change = SCREENING_PARAMS["price_change_min"]
         self.max_change = SCREENING_PARAMS["price_change_max"]
 

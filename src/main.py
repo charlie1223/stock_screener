@@ -80,12 +80,18 @@ def run_screener(force: bool = False):
     # 終端機顯示最終結果
     TerminalDisplay.display_results(results, institutional_data)
 
-    # 輸出 CSV
+    # 輸出 CSV - 每一步的結果
+    exporter = CSVExporter()
+    if step_results:
+        step_dir = exporter.export_step_results(step_results)
+        if step_dir:
+            print(f"\n逐步篩選結果已儲存至: {step_dir}")
+
+    # 輸出最終結果 CSV
     if not results.empty:
-        exporter = CSVExporter()
         filepath = exporter.export(results)
         if filepath:
-            print(f"\n結果已儲存至: {filepath}")
+            print(f"最終結果已儲存至: {filepath}")
 
 
 def main():

@@ -2,13 +2,17 @@
 輸出模組 - 終端機顯示和 CSV 輸出
 """
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import logging
+import shutil
 
 from config.settings import DATA_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
+
+# 資料保留天數
+DATA_RETENTION_DAYS = 30
 
 
 class TerminalDisplay:
@@ -222,22 +226,56 @@ class TerminalDisplay:
 
 
 class CSVExporter:
-    """CSV 輸出器"""
+    """CSV 輸出器 - 按日期歸檔，自動清理超過30天的資料"""
 
     def __init__(self):
         self.output_dir = DATA_OUTPUT_DIR
+        # 執行時自動清理舊資料
+        self.cleanup_old_data()
+
+    def _get_date_dir(self) -> Path:
+        """取得今日日期資料夾路徑"""
+        today = datetime.now().strftime("%Y%m%d")
+        date_dir = self.output_dir / today
+        date_dir.mkdir(parents=True, exist_ok=True)
+        return date_dir
+
+    def cleanup_old_data(self):
+        """清理超過保留天數的資料"""
+        if not self.output_dir.exists():
+            return
+
+        cutoff_date = datetime.now() - timedelta(days=DATA_RETENTION_DAYS)
+        deleted_count = 0
+
+        for item in self.output_dir.iterdir():
+            # 只處理日期格式的資料夾 (YYYYMMDD)
+            if item.is_dir() and len(item.name) == 8 and item.name.isdigit():
+                try:
+                    folder_date = datetime.strptime(item.name, "%Y%m%d")
+                    if folder_date < cutoff_date:
+                        shutil.rmtree(item)
+                        deleted_count += 1
+                        logger.debug(f"已刪除過期資料夾: {item.name}")
+                except ValueError:
+                    continue
+
+        if deleted_count > 0:
+            logger.info(f"已清理 {deleted_count} 個超過 {DATA_RETENTION_DAYS} 天的資料夾")
 
     def export(self, df: pd.DataFrame, filename: str = None) -> str:
-        """將篩選結果輸出為 CSV"""
+        """將篩選結果輸出為 CSV (存放在日期資料夾)"""
         if df.empty:
             logger.warning("無資料可輸出")
             return None
 
+        date_dir = self._get_date_dir()
+
         if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%H%M%S")
             filename = f"screener_result_{timestamp}.csv"
 
-        filepath = self.output_dir / filename
+        filepath = date_dir / filename
 
         # 選擇要輸出的欄位
         output_columns = [
@@ -256,3 +294,58 @@ class CSVExporter:
 
         logger.info(f"結果已儲存至: {filepath}")
         return str(filepath)
+
+    def export_step_results(self, step_results: dict) -> str:
+        """
+        將每一步篩選結果輸出為 CSV (存放在日期資料夾下的 steps 子資料夾)
+        Args:
+            step_results: 每一步篩選的結果字典 {step_number: {"name": str, "data": DataFrame}}
+        Returns:
+            輸出的資料夾路徑
+        """
+        if not step_results:
+            logger.warning("無篩選結果可輸出")
+            return None
+
+        date_dir = self._get_date_dir()
+        timestamp = datetime.now().strftime("%H%M%S")
+
+        # 建立 steps 子資料夾
+        step_dir = date_dir / f"steps_{timestamp}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+
+        # 選擇要輸出的欄位
+        output_columns = [
+            "stock_id", "stock_name", "price", "change_pct",
+            "volume", "volume_ratio", "turnover_rate", "market_cap",
+            "open", "high", "low", "prev_close", "market"
+        ]
+
+        exported_files = []
+
+        for step_num in sorted(step_results.keys()):
+            step_info = step_results[step_num]
+            step_name = step_info["name"]
+            df = step_info["data"]
+
+            if df.empty:
+                continue
+
+            # 檔名格式: step_01_漲幅3%-5%.csv
+            safe_name = step_name.replace("/", "-").replace(" ", "_")
+            filename = f"step_{step_num:02d}_{safe_name}.csv"
+            filepath = step_dir / filename
+
+            available_cols = [c for c in output_columns if c in df.columns]
+            output_df = df[available_cols].copy()
+
+            # 輸出 CSV (UTF-8-BOM 確保 Excel 正確顯示中文)
+            output_df.to_csv(filepath, index=False, encoding="utf-8-sig")
+            exported_files.append(filename)
+
+        if exported_files:
+            logger.info(f"逐步篩選結果已儲存至: {step_dir}")
+            logger.info(f"共輸出 {len(exported_files)} 個檔案")
+            return str(step_dir)
+
+        return None

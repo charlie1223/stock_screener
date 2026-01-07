@@ -46,7 +46,8 @@ class VolumeRatioScreener(BaseScreener):
 
         if now.hour < 9:
             elapsed_minutes = 0
-        elif now.hour >= 13 and now.minute >= 30:
+        elif now.hour > 13 or (now.hour == 13 and now.minute >= 30):
+            # 收盤後，使用全天交易時間
             elapsed_minutes = market_minutes
         else:
             elapsed_minutes = (now.hour - 9) * 60 + now.minute
@@ -77,10 +78,10 @@ class VolumeRatioScreener(BaseScreener):
 
 
 class TurnoverRateScreener(BaseScreener):
-    """步驟3: 換手率 5%-10% 篩選"""
+    """步驟3: 換手率篩選"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="換手率 5%-10%", step_number=3)
+        super().__init__(name="換手率 1%-20%", step_number=3)
         self.min_rate = SCREENING_PARAMS["turnover_rate_min"]
         self.max_rate = SCREENING_PARAMS["turnover_rate_max"]
         self.data_fetcher = data_fetcher
@@ -130,10 +131,10 @@ class TurnoverRateScreener(BaseScreener):
 
 
 class MarketCapScreener(BaseScreener):
-    """步驟4: 市值 50億-200億 篩選"""
+    """步驟4: 市值篩選"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="市值 50-200億", step_number=4)
+        super().__init__(name="市值 >= 20億", step_number=4)
         self.min_cap = SCREENING_PARAMS["market_cap_min"]
         self.max_cap = SCREENING_PARAMS["market_cap_max"]
         self.data_fetcher = data_fetcher
@@ -447,3 +448,255 @@ class BullishPatternScreener(BaseScreener):
         df["pattern_info"] = pattern_info
 
         return df[df["bullish_pattern"]].reset_index(drop=True)
+
+
+class InstitutionalHoldingScreener(BaseScreener):
+    """法人持股/散戶比例篩選 - 排除散戶過高的股票"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="法人持股篩選", step_number=9)
+        self.data_fetcher = data_fetcher
+        self.min_institutional = SCREENING_PARAMS.get("min_institutional_holding", 30)
+        self.max_retail = SCREENING_PARAMS.get("max_retail_holding", 50)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        holding_info = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取股權分散表資料
+            holding_data = self.data_fetcher.get_shareholding_distribution(stock_id)
+
+            if not holding_data:
+                # 無資料時保留股票，但標記
+                valid_stocks.append(True)
+                holding_info.append("資料不足")
+                continue
+
+            institutional_pct = holding_data.get("institutional_pct", 0)
+            retail_pct = holding_data.get("retail_pct", 100)
+
+            # 條件: 法人持股 >= 門檻 且 散戶持股 <= 門檻
+            is_valid = institutional_pct >= self.min_institutional and retail_pct <= self.max_retail
+            valid_stocks.append(is_valid)
+            holding_info.append(f"法人{institutional_pct:.0f}%/散戶{retail_pct:.0f}%")
+
+        df["holding_valid"] = valid_stocks
+        df["holding_info"] = holding_info
+
+        return df[df["holding_valid"]].reset_index(drop=True)
+
+
+class FundamentalScreener(BaseScreener):
+    """基本面篩選 - EPS、營收成長"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="基本面篩選", step_number=10)
+        self.data_fetcher = data_fetcher
+        self.min_eps = SCREENING_PARAMS.get("min_eps", 0)
+        self.min_revenue_growth = SCREENING_PARAMS.get("min_revenue_growth", -10)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        fundamental_info = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取基本面資料
+            fundamental_data = self.data_fetcher.get_fundamental_data(stock_id)
+
+            if not fundamental_data:
+                # 無資料時保留股票
+                valid_stocks.append(True)
+                fundamental_info.append("資料不足")
+                continue
+
+            eps = fundamental_data.get("eps", 0)
+            revenue_growth = fundamental_data.get("revenue_growth", 0)
+
+            # 條件: EPS > 0 (獲利) 且 營收成長 > 門檻
+            is_valid = eps >= self.min_eps and revenue_growth >= self.min_revenue_growth
+            valid_stocks.append(is_valid)
+            fundamental_info.append(f"EPS:{eps:.2f}/營收YoY:{revenue_growth:.1f}%")
+
+        df["fundamental_valid"] = valid_stocks
+        df["fundamental_info"] = fundamental_info
+
+        return df[df["fundamental_valid"]].reset_index(drop=True)
+
+
+class InstitutionalBuyScreener(BaseScreener):
+    """法人連續買超篩選"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="法人買超", step_number=8)
+        self.data_fetcher = data_fetcher
+        self.buy_days = SCREENING_PARAMS.get("institutional_buy_days", 5)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        buy_info = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取法人買賣超資料
+            inst_data = self.data_fetcher.get_institutional_investors(stock_id, days=self.buy_days)
+
+            if not inst_data:
+                valid_stocks.append(True)  # 無資料時保留
+                buy_info.append("資料不足")
+                continue
+
+            # 外資 + 投信 合計買超
+            foreign_sum = inst_data.get("foreign", {}).get("sum_days", 0)
+            trust_sum = inst_data.get("investment_trust", {}).get("sum_days", 0)
+            total_sum = foreign_sum + trust_sum
+
+            # 條件: 外資+投信 近N日合計買超 > 0
+            is_valid = total_sum > 0
+            valid_stocks.append(is_valid)
+
+            # 格式化顯示
+            def fmt(x):
+                return f"+{x:,}" if x > 0 else f"{x:,}"
+            buy_info.append(f"外資{fmt(foreign_sum)}/投信{fmt(trust_sum)}")
+
+        df["inst_buy_valid"] = valid_stocks
+        df["inst_buy_info"] = buy_info
+
+        return df[df["inst_buy_valid"]].reset_index(drop=True)
+
+
+class ForeignConsecutiveBuyScreener(BaseScreener):
+    """外資連續買超篩選 - 偵測外資連續 N 日買超訊號"""
+
+    def __init__(self, data_fetcher, min_consecutive_days: int = None):
+        super().__init__(name="外資連續買超", step_number=11)
+        self.data_fetcher = data_fetcher
+        self.min_consecutive_days = min_consecutive_days or SCREENING_PARAMS.get("foreign_consecutive_buy_days", 3)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        consecutive_info = []
+        consecutive_days_list = []
+        total_buy_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取外資連續買超資料
+            foreign_data = self.data_fetcher.get_foreign_consecutive_buy(stock_id, days=10)
+
+            consecutive_days = foreign_data.get("consecutive_buy_days", 0)
+            total_buy = foreign_data.get("total_buy_amount", 0)
+            is_consecutive = consecutive_days >= self.min_consecutive_days
+
+            valid_stocks.append(is_consecutive)
+            consecutive_days_list.append(consecutive_days)
+            total_buy_list.append(total_buy)
+
+            if is_consecutive:
+                consecutive_info.append(f"連{consecutive_days}日買超 +{total_buy:,}張")
+            else:
+                consecutive_info.append(f"連{consecutive_days}日" if consecutive_days > 0 else "無連續買超")
+
+        df["foreign_consecutive_valid"] = valid_stocks
+        df["foreign_consecutive_info"] = consecutive_info
+        df["foreign_consecutive_days"] = consecutive_days_list
+        df["foreign_total_buy"] = total_buy_list
+
+        return df[df["foreign_consecutive_valid"]].reset_index(drop=True)
+
+
+class BelowForeignCostScreener(BaseScreener):
+    """低於外資成本篩選 - 找出現價低於外資平均成本的「打折股」"""
+
+    def __init__(self, data_fetcher, max_premium_pct: float = None, cost_days: int = None):
+        """
+        Args:
+            data_fetcher: 資料獲取器
+            max_premium_pct: 最大允許溢價幅度 (%)，預設 5%
+                            例: 5 表示現價最多比外資成本高 5%
+            cost_days: 計算成本的天數範圍
+        """
+        super().__init__(name="外資成本折價", step_number=12)
+        self.data_fetcher = data_fetcher
+        self.max_premium_pct = max_premium_pct if max_premium_pct is not None else SCREENING_PARAMS.get("foreign_cost_max_premium", 5.0)
+        self.cost_days = cost_days or SCREENING_PARAMS.get("foreign_cost_calculation_days", 60)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        cost_info = []
+        avg_cost_list = []
+        discount_pct_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+
+            # 獲取外資平均成本
+            cost_data = self.data_fetcher.get_foreign_average_cost(stock_id, days=self.cost_days)
+
+            if not cost_data or "avg_cost" not in cost_data:
+                # 無法計算成本時保留股票，但不計算折價
+                valid_stocks.append(True)
+                cost_info.append("成本資料不足")
+                avg_cost_list.append(np.nan)
+                discount_pct_list.append(np.nan)
+                continue
+
+            avg_cost = cost_data["avg_cost"]
+
+            # 計算現價相對成本的溢價/折價幅度
+            # 負數 = 折價 (現價低於成本)，正數 = 溢價
+            premium_pct = ((current_price - avg_cost) / avg_cost) * 100
+
+            # 條件: 現價低於成本 (折價) 或 溢價不超過門檻
+            is_valid = premium_pct <= self.max_premium_pct
+
+            valid_stocks.append(is_valid)
+            avg_cost_list.append(avg_cost)
+            discount_pct_list.append(-premium_pct)  # 轉為折價幅度 (正數=打折)
+
+            if premium_pct < 0:
+                cost_info.append(f"成本{avg_cost:.1f} 折價{-premium_pct:.1f}%")
+            elif premium_pct <= self.max_premium_pct:
+                cost_info.append(f"成本{avg_cost:.1f} 溢價{premium_pct:.1f}%")
+            else:
+                cost_info.append(f"成本{avg_cost:.1f} 溢價過高{premium_pct:.1f}%")
+
+        df["foreign_cost_valid"] = valid_stocks
+        df["foreign_cost_info"] = cost_info
+        df["foreign_avg_cost"] = avg_cost_list
+        df["discount_pct"] = discount_pct_list
+
+        return df[df["foreign_cost_valid"]].reset_index(drop=True)

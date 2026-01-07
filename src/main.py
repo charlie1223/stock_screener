@@ -17,6 +17,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 from config.settings import SCREENING_START, MARKET_CLOSE
 from src.pipeline import ScreeningPipeline
 from src.output import TerminalDisplay, CSVExporter
+from src.bullish_pool import BullishPoolTracker
 
 
 def setup_logging(verbose: bool = False):
@@ -40,7 +41,7 @@ def is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
-def run_screener(force: bool = False):
+def run_screener(force: bool = False, scan_pool: bool = False):
     """執行選股程式"""
     # 檢查時間
     if not force:
@@ -93,27 +94,57 @@ def run_screener(force: bool = False):
         if filepath:
             print(f"最終結果已儲存至: {filepath}")
 
+    # === 多頭股池追蹤 ===
+    if scan_pool:
+        run_bullish_pool_scan(pipeline.data_fetcher)
+
+
+def run_bullish_pool_scan(data_fetcher=None):
+    """執行多頭股池掃描"""
+    print("\n" + "=" * 60)
+    print("  開始掃描多頭股池...")
+    print("=" * 60)
+
+    tracker = BullishPoolTracker(data_fetcher)
+
+    # 獲取所有股票
+    stock_df = tracker.data_fetcher.get_all_stocks_realtime()
+    if stock_df.empty:
+        logging.warning("無法獲取股票清單")
+        return
+
+    # 掃描多頭股票
+    bullish_df = tracker.scan_bullish_stocks(stock_df)
+
+    # 更新股池並輸出報告
+    update_result = tracker.update_pool(bullish_df)
+    tracker.print_pool_report(update_result)
+
+    # 輸出 CSV
+    if not bullish_df.empty:
+        from src.output import CSVExporter
+        exporter = CSVExporter()
+        date_dir = exporter._get_date_dir()
+        filepath = date_dir / "bullish_pool.csv"
+        bullish_df.to_csv(filepath, index=False, encoding="utf-8-sig")
+        print(f"\n多頭股池已儲存至: {filepath}")
+
 
 def main():
     """主程式入口"""
     parser = argparse.ArgumentParser(
-        description="台股尾盤選股程式 - 八大步驟篩選",
+        description="台股尾盤選股程式 - 八大步驟篩選 + 多頭股池追蹤",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-篩選步驟:
-  1. 漲幅 3%-5%
-  2. 量比 > 1
-  3. 換手率 5%-10%
-  4. 市值 50億-200億
-  5. 成交量持續放大
-  6. 均線多頭排列 (60日線向上)
-  7. 強於大盤
-  8. 尾盤創新高
+兩份報告:
+  1. 【今日訊號】當日漲幅>=3% + 量比 + 均線多頭 + 法人買超
+  2. 【多頭股池】體質追蹤 (均線多頭排列，不含當日漲幅條件)
 
 範例:
-  python -m src.main              # 正常執行 (檢查交易時間)
+  python -m src.main              # 正常執行今日訊號篩選
   python -m src.main --force      # 強制執行 (忽略時間檢查)
-  python -m src.main -f -v        # 強制執行 + 詳細日誌
+  python -m src.main -f --pool    # 執行今日訊號 + 多頭股池掃描
+  python -m src.main --pool-only  # 只執行多頭股池掃描
         """
     )
     parser.add_argument(
@@ -126,6 +157,16 @@ def main():
         action="store_true",
         help="顯示詳細日誌"
     )
+    parser.add_argument(
+        "--pool",
+        action="store_true",
+        help="同時執行多頭股池掃描"
+    )
+    parser.add_argument(
+        "--pool-only",
+        action="store_true",
+        help="只執行多頭股池掃描 (不執行今日訊號篩選)"
+    )
 
     args = parser.parse_args()
 
@@ -133,13 +174,18 @@ def main():
     setup_logging(verbose=args.verbose)
 
     print("\n" + "=" * 60)
-    print("  台股尾盤選股程式 v1.0")
-    print("  八大步驟智能篩選")
+    print("  台股選股程式 v2.0")
+    print("  今日訊號 + 多頭股池追蹤")
     print("=" * 60 + "\n")
 
     # 執行
     try:
-        run_screener(force=args.force)
+        if args.pool_only:
+            # 只執行多頭股池掃描
+            run_bullish_pool_scan()
+        else:
+            # 執行今日訊號篩選 (可選擇同時掃描股池)
+            run_screener(force=args.force, scan_pool=args.pool)
     except KeyboardInterrupt:
         print("\n\n程式已中斷")
         sys.exit(0)

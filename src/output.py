@@ -54,8 +54,8 @@ class TerminalDisplay:
             # 準備顯示的資料
             display_df = df.head(max_stocks_per_step).copy()
 
-            # 選擇顯示欄位
-            display_columns = ["stock_id", "stock_name", "price", "change_pct"]
+            # 選擇顯示欄位 (加入產業)
+            display_columns = ["stock_id", "stock_name", "industry", "price", "change_pct"]
             available_cols = [c for c in display_columns if c in display_df.columns]
 
             if not available_cols:
@@ -78,10 +78,17 @@ class TerminalDisplay:
             column_names = {
                 "stock_id": "代號",
                 "stock_name": "名稱",
+                "industry": "產業",
                 "price": "現價",
                 "change_pct": "漲幅"
             }
             display_df = display_df.rename(columns=column_names)
+
+            # 顯示產業分布統計
+            if "industry" in df.columns:
+                industry_counts = df["industry"].value_counts().head(5)
+                if not industry_counts.empty:
+                    print(f"  產業分布: {', '.join([f'{ind}({cnt})' for ind, cnt in industry_counts.items()])}")
 
             # 顯示表格
             try:
@@ -123,9 +130,9 @@ class TerminalDisplay:
         if institutional_data is not None and not institutional_data.empty:
             df = df.merge(institutional_data, on="stock_id", how="left")
 
-        # 準備顯示欄位
+        # 準備顯示欄位 (加入產業)
         display_columns = [
-            "stock_id", "stock_name", "price", "change_pct",
+            "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume_ratio", "turnover_rate", "market_cap"
         ]
 
@@ -158,6 +165,7 @@ class TerminalDisplay:
         column_names = {
             "stock_id": "代號",
             "stock_name": "名稱",
+            "industry": "產業",
             "price": "現價",
             "change_pct": "漲幅",
             "volume_ratio": "量比",
@@ -165,6 +173,18 @@ class TerminalDisplay:
             "market_cap": "市值"
         }
         display_df = display_df.rename(columns=column_names)
+
+        # 顯示產業族群統計
+        if "industry" in df.columns:
+            print("\n  【產業族群分布】")
+            industry_counts = df["industry"].value_counts()
+            for ind in industry_counts.index:
+                stocks_in_ind = df[df["industry"] == ind]["stock_name"].tolist()
+                stock_names = ", ".join(stocks_in_ind[:5])
+                if len(stocks_in_ind) > 5:
+                    stock_names += f"... 等{len(stocks_in_ind)}檔"
+                print(f"  {ind}: {stock_names}")
+            print()
 
         # 嘗試使用 tabulate，如果沒有安裝則使用簡單格式
         try:
@@ -279,7 +299,7 @@ class CSVExporter:
 
         # 選擇要輸出的欄位
         output_columns = [
-            "stock_id", "stock_name", "price", "change_pct",
+            "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
             "open", "high", "low", "prev_close", "market",
             # 三大法人欄位
@@ -316,7 +336,7 @@ class CSVExporter:
 
         # 選擇要輸出的欄位
         output_columns = [
-            "stock_id", "stock_name", "price", "change_pct",
+            "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
             "open", "high", "low", "prev_close", "market"
         ]

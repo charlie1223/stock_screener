@@ -1,5 +1,6 @@
 """
-十大步驟篩選流水線 (含大盤均線警示)
+趨勢多頭股篩選流水線 (含大盤均線警示)
+優先篩選：基本面優良 + 法人認養 + 趨勢多頭
 """
 import pandas as pd
 from datetime import datetime
@@ -12,12 +13,14 @@ from src.screeners.filters import (
     VolumeRatioScreener,
     TurnoverRateScreener,
     MarketCapScreener,
-    VolumeTrendScreener,
     MovingAverageScreener,
     RelativeStrengthScreener,
     IntradayHighScreener,
-    MASupportScreener,
-    BullishPatternScreener,
+    InstitutionalHoldingScreener,
+    FundamentalScreener,
+    InstitutionalBuyScreener,
+    ForeignConsecutiveBuyScreener,
+    BelowForeignCostScreener,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,40 +126,69 @@ class MarketMonitor:
 
 
 class ScreeningPipeline:
-    """篩選流水線"""
+    """
+    篩選流水線
+    目標：找出趨勢多頭 + 基本面優良 + 法人認養的股票
+    """
 
-    def __init__(self, enable_extra_filters: bool = True):
+    def __init__(
+        self,
+        enable_fundamental: bool = True,
+        enable_institutional: bool = True,
+        enable_foreign_signal: bool = True
+    ):
         """
         Args:
-            enable_extra_filters: 是否啟用額外篩選器 (均線支撐、多方型態)
+            enable_fundamental: 是否啟用基本面篩選
+            enable_institutional: 是否啟用法人持股/買超篩選
+            enable_foreign_signal: 是否啟用外資連續買超訊號篩選
         """
         self.data_fetcher = DataFetcher()
         self.market_monitor = MarketMonitor(self.data_fetcher)
-        self.enable_extra_filters = enable_extra_filters
+        self.enable_fundamental = enable_fundamental
+        self.enable_institutional = enable_institutional
+        self.enable_foreign_signal = enable_foreign_signal
         self.screeners = self._init_screeners()
         self.stats = []
         self.market_status = None
-        # 新增：儲存每一步篩選後的結果
         self.step_results = {}
 
     def _init_screeners(self) -> List:
-        """初始化篩選器"""
+        """
+        初始化篩選器
+        篩選順序優化：先用快速條件淘汰，再用耗時條件精篩
+        """
         screeners = [
-            PriceChangeScreener(),                              # 步驟1
-            VolumeRatioScreener(self.data_fetcher),            # 步驟2
-            TurnoverRateScreener(self.data_fetcher),           # 步驟3
-            MarketCapScreener(self.data_fetcher),              # 步驟4
-            VolumeTrendScreener(self.data_fetcher),            # 步驟5
-            MovingAverageScreener(self.data_fetcher),          # 步驟6
-            RelativeStrengthScreener(self.data_fetcher),       # 步驟7
-            IntradayHighScreener(),                             # 步驟8
+            # === 第一階段：快速篩選 (當日數據) ===
+            PriceChangeScreener(),                              # 1. 漲幅 >= 3%
+            VolumeRatioScreener(self.data_fetcher),            # 2. 量比 > 1
+            TurnoverRateScreener(self.data_fetcher),           # 3. 換手率 1%-20%
+            MarketCapScreener(self.data_fetcher),              # 4. 市值 20億以上
+
+            # === 第二階段：趨勢篩選 (歷史數據) ===
+            MovingAverageScreener(self.data_fetcher),          # 5. 均線多頭排列
+            RelativeStrengthScreener(self.data_fetcher),       # 6. 強於大盤
+            IntradayHighScreener(),                             # 7. 尾盤創新高
         ]
 
-        # 額外篩選器 (均線支撐 + 多方型態)
-        if self.enable_extra_filters:
+        # === 第三階段：法人籌碼篩選 ===
+        if self.enable_institutional:
             screeners.extend([
-                MASupportScreener(self.data_fetcher),           # 步驟9
-                BullishPatternScreener(self.data_fetcher),      # 步驟10
+                InstitutionalBuyScreener(self.data_fetcher),    # 8. 法人近5日買超
+                InstitutionalHoldingScreener(self.data_fetcher), # 9. 法人持股/散戶比例
+            ])
+
+        # === 第四階段：基本面篩選 ===
+        if self.enable_fundamental:
+            screeners.append(
+                FundamentalScreener(self.data_fetcher),         # 10. EPS>0, 營收成長
+            )
+
+        # === 第五階段：外資連續買超訊號 (參考 stock-tw.aiinpocket.com 策略) ===
+        if self.enable_foreign_signal:
+            screeners.extend([
+                ForeignConsecutiveBuyScreener(self.data_fetcher, min_consecutive_days=3),  # 11. 外資連續3日買超
+                BelowForeignCostScreener(self.data_fetcher, max_premium_pct=5.0),         # 12. 現價不超過外資成本5%
             ])
 
         return screeners
@@ -188,6 +220,11 @@ class ScreeningPipeline:
             return pd.DataFrame()
 
         logger.info(f"共獲取 {len(df)} 檔股票即時報價")
+
+        # 1.5 加入產業分類
+        industry_map = self.data_fetcher.get_industry_classification()
+        if industry_map:
+            df["industry"] = df["stock_id"].map(industry_map).fillna("未分類")
 
         # 2. 依序執行篩選步驟，並儲存每一步的結果
         self.stats = []

@@ -18,6 +18,7 @@ from config.settings import SCREENING_START, MARKET_CLOSE
 from src.pipeline import ScreeningPipeline
 from src.output import TerminalDisplay, CSVExporter
 from src.bullish_pool import BullishPoolTracker
+from src.institutional_tracker import InstitutionalTracker
 
 
 def setup_logging(verbose: bool = False):
@@ -130,21 +131,70 @@ def run_bullish_pool_scan(data_fetcher=None):
         print(f"\n多頭股池已儲存至: {filepath}")
 
 
+def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
+    """執行法人佈局掃描"""
+    print("\n" + "=" * 60)
+    print("  開始掃描法人佈局...")
+    print("=" * 60)
+
+    tracker = InstitutionalTracker(data_fetcher)
+
+    # 如果沒有指定股票，從即時報價取得
+    if stock_ids is None:
+        stock_df = tracker.data_fetcher.get_all_stocks_realtime()
+        if stock_df.empty:
+            logging.warning("無法獲取股票清單")
+            return
+        stock_ids = stock_df["stock_id"].tolist()
+    else:
+        stock_df = tracker.data_fetcher.get_all_stocks_realtime()
+
+    # 掃描法人連續買超的股票
+    result_df = tracker.scan_quietly_buying_stocks(stock_ids, min_consecutive_days=3)
+
+    # 輸出報告
+    tracker.print_institutional_report(result_df, stock_df)
+
+    # 更新追蹤歷史
+    if not result_df.empty:
+        tracker.update_tracking(result_df.to_dict("records"))
+
+        # 輸出 CSV
+        from src.output import CSVExporter
+        exporter = CSVExporter()
+        date_dir = exporter._get_date_dir()
+        filepath = date_dir / "institutional_tracking.csv"
+
+        # 合併股票資訊
+        if not stock_df.empty:
+            result_df = result_df.merge(
+                stock_df[["stock_id", "stock_name", "industry", "price", "change_pct"]],
+                on="stock_id",
+                how="left"
+            )
+
+        result_df.to_csv(filepath, index=False, encoding="utf-8-sig")
+        print(f"\n法人佈局追蹤已儲存至: {filepath}")
+
+
 def main():
     """主程式入口"""
     parser = argparse.ArgumentParser(
-        description="台股尾盤選股程式 - 八大步驟篩選 + 多頭股池追蹤",
+        description="台股選股程式 - 今日訊號 + 多頭股池 + 法人佈局追蹤",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-兩份報告:
+三份報告:
   1. 【今日訊號】當日漲幅>=3% + 量比 + 均線多頭 + 法人買超
   2. 【多頭股池】體質追蹤 (均線多頭排列，不含當日漲幅條件)
+  3. 【法人佈局】追蹤法人連續買超、偷偷佈局的股票
 
 範例:
   python -m src.main              # 正常執行今日訊號篩選
   python -m src.main --force      # 強制執行 (忽略時間檢查)
   python -m src.main -f --pool    # 執行今日訊號 + 多頭股池掃描
-  python -m src.main --pool-only  # 只執行多頭股池掃描
+  python -m src.main -f --inst    # 執行今日訊號 + 法人佈局追蹤
+  python -m src.main -f --all     # 執行所有報告
+  python -m src.main --inst-only  # 只執行法人佈局追蹤
         """
     )
     parser.add_argument(
@@ -165,7 +215,22 @@ def main():
     parser.add_argument(
         "--pool-only",
         action="store_true",
-        help="只執行多頭股池掃描 (不執行今日訊號篩選)"
+        help="只執行多頭股池掃描"
+    )
+    parser.add_argument(
+        "--inst",
+        action="store_true",
+        help="同時執行法人佈局追蹤"
+    )
+    parser.add_argument(
+        "--inst-only",
+        action="store_true",
+        help="只執行法人佈局追蹤"
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="執行所有報告 (今日訊號 + 多頭股池 + 法人佈局)"
     )
 
     args = parser.parse_args()
@@ -175,7 +240,7 @@ def main():
 
     print("\n" + "=" * 60)
     print("  台股選股程式 v2.0")
-    print("  今日訊號 + 多頭股池追蹤")
+    print("  今日訊號 + 多頭股池 + 法人佈局追蹤")
     print("=" * 60 + "\n")
 
     # 執行
@@ -183,9 +248,21 @@ def main():
         if args.pool_only:
             # 只執行多頭股池掃描
             run_bullish_pool_scan()
+        elif args.inst_only:
+            # 只執行法人佈局追蹤
+            run_institutional_scan()
         else:
-            # 執行今日訊號篩選 (可選擇同時掃描股池)
-            run_screener(force=args.force, scan_pool=args.pool)
+            # 判斷是否執行額外報告
+            scan_pool = args.pool or args.all
+            scan_inst = args.inst or args.all
+
+            # 執行今日訊號篩選
+            run_screener(force=args.force, scan_pool=scan_pool)
+
+            # 執行法人佈局追蹤
+            if scan_inst:
+                run_institutional_scan()
+
     except KeyboardInterrupt:
         print("\n\n程式已中斷")
         sys.exit(0)

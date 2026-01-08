@@ -149,6 +149,11 @@ def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
     else:
         stock_df = tracker.data_fetcher.get_all_stocks_realtime()
 
+    # 加入產業分類
+    industry_map = tracker.data_fetcher.get_industry_classification()
+    if industry_map:
+        stock_df["industry"] = stock_df["stock_id"].map(industry_map).fillna("未分類")
+
     # 掃描法人連續買超的股票
     result_df = tracker.scan_quietly_buying_stocks(stock_ids, min_consecutive_days=3)
 
@@ -167,8 +172,12 @@ def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
 
         # 合併股票資訊
         if not stock_df.empty:
+            merge_cols = ["stock_id", "stock_name", "price", "change_pct"]
+            if "industry" in stock_df.columns:
+                merge_cols.insert(2, "industry")
+            available_cols = [c for c in merge_cols if c in stock_df.columns]
             result_df = result_df.merge(
-                stock_df[["stock_id", "stock_name", "industry", "price", "change_pct"]],
+                stock_df[available_cols],
                 on="stock_id",
                 how="left"
             )

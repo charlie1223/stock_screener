@@ -182,6 +182,12 @@ def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
                 how="left"
             )
 
+        # 調整欄位順序：stock_id, stock_name, industry 放最前面
+        priority_cols = ["stock_id", "stock_name", "industry", "price", "change_pct"]
+        other_cols = [c for c in result_df.columns if c not in priority_cols]
+        final_cols = [c for c in priority_cols if c in result_df.columns] + other_cols
+        result_df = result_df[final_cols]
+
         result_df.to_csv(filepath, index=False, encoding="utf-8-sig")
         print(f"\n法人佈局追蹤已儲存至: {filepath}")
 

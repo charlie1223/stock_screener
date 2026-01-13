@@ -134,8 +134,9 @@ class MarketCapScreener(BaseScreener):
     """步驟4: 市值篩選"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="市值 >= 20億", step_number=4)
-        self.min_cap = SCREENING_PARAMS["market_cap_min"]
+        min_cap = SCREENING_PARAMS["market_cap_min"]
+        super().__init__(name=f"市值 >= {min_cap}億", step_number=4)
+        self.min_cap = min_cap
         self.max_cap = SCREENING_PARAMS["market_cap_max"]
         self.data_fetcher = data_fetcher
         self._market_cap_data = None

@@ -163,7 +163,7 @@ class ScreeningPipeline:
             PriceChangeScreener(),                              # 1. 漲幅 >= 3%
             VolumeRatioScreener(self.data_fetcher),            # 2. 量比 > 1
             TurnoverRateScreener(self.data_fetcher),           # 3. 換手率 1%-20%
-            MarketCapScreener(self.data_fetcher),              # 4. 市值 20億以上
+            MarketCapScreener(self.data_fetcher),              # 4. 市值篩選
 
             # === 第二階段：趨勢篩選 (歷史數據) ===
             MovingAverageScreener(self.data_fetcher),          # 5. 均線多頭排列

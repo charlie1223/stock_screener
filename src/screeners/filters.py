@@ -78,12 +78,14 @@ class VolumeRatioScreener(BaseScreener):
 
 
 class TurnoverRateScreener(BaseScreener):
-    """步驟3: 換手率篩選"""
+    """步驟5: 換手率篩選"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="換手率 1%-20%", step_number=3)
-        self.min_rate = SCREENING_PARAMS["turnover_rate_min"]
-        self.max_rate = SCREENING_PARAMS["turnover_rate_max"]
+        min_rate = SCREENING_PARAMS.get("turnover_rate_min", 0.5)
+        max_rate = SCREENING_PARAMS.get("turnover_rate_max", 20.0)
+        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=5)
+        self.min_rate = min_rate
+        self.max_rate = max_rate
         self.data_fetcher = data_fetcher
         self._shares_data = None
 
@@ -131,11 +133,11 @@ class TurnoverRateScreener(BaseScreener):
 
 
 class MarketCapScreener(BaseScreener):
-    """步驟4: 市值篩選"""
+    """步驟1: 市值篩選"""
 
     def __init__(self, data_fetcher):
         min_cap = SCREENING_PARAMS["market_cap_min"]
-        super().__init__(name=f"市值 >= {min_cap}億", step_number=4)
+        super().__init__(name=f"市值 >= {min_cap}億", step_number=1)
         self.min_cap = min_cap
         self.max_cap = SCREENING_PARAMS["market_cap_max"]
         self.data_fetcher = data_fetcher
@@ -151,16 +153,26 @@ class MarketCapScreener(BaseScreener):
         if self._market_cap_data is None:
             self._market_cap_data = self.data_fetcher.get_market_cap_data()
 
-        if self._market_cap_data.empty:
-            # 無法獲取市值資料，跳過此篩選
-            df["market_cap"] = np.nan
-            return df
+        if not self._market_cap_data.empty:
+            # 有市值資料，使用市值篩選
+            df = df.merge(self._market_cap_data, on="stock_id", how="left")
+            mask = (df["market_cap"] >= self.min_cap) & (df["market_cap"] <= self.max_cap)
+            return df[mask].dropna(subset=["market_cap"]).reset_index(drop=True)
 
-        # 合併市值資料
-        df = df.merge(self._market_cap_data, on="stock_id", how="left")
+        # 備援：使用成交金額估算（排除小型股）
+        # 市值 50 億的股票，假設換手率 1%，日成交金額約 5000 萬
+        # 用成交金額 > 1000 萬作為門檻（保守估計）
+        if "volume" in df.columns and "price" in df.columns:
+            # 成交金額（萬元）= 成交量（張）* 價格 * 1000 / 10000
+            df["trade_value"] = df["volume"] * df["price"] * 0.1  # 萬元
+            min_trade_value = self.min_cap * 0.1  # 市值50億 -> 成交額500萬
+            mask = df["trade_value"] >= min_trade_value
+            df["market_cap"] = np.nan  # 標記沒有真實市值資料
+            return df[mask].reset_index(drop=True)
 
-        mask = (df["market_cap"] >= self.min_cap) & (df["market_cap"] <= self.max_cap)
-        return df[mask].dropna(subset=["market_cap"]).reset_index(drop=True)
+        # 無法篩選，返回原資料
+        df["market_cap"] = np.nan
+        return df
 
 
 class VolumeTrendScreener(BaseScreener):
@@ -312,12 +324,14 @@ class IntradayHighScreener(BaseScreener):
 
 
 class MASupportScreener(BaseScreener):
-    """步驟9: 均線支撐篩選 - 站穩關鍵均線"""
+    """步驟4: 均線支撐篩選 - 守住長期均線且斜率向上"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="均線支撐", step_number=9)
+        super().__init__(name="均線支撐", step_number=4)
         self.data_fetcher = data_fetcher
-        self.support_ma_periods = [5, 10, 20, 60]  # 支撐均線
+        self.support_ma_periods = SCREENING_PARAMS.get("ma_support_periods", [20, 60])
+        self.tolerance = SCREENING_PARAMS.get("ma_support_tolerance", 0.02)
+        self.slope_lookback = SCREENING_PARAMS.get("ma_slope_lookback_days", 5)
 
     def screen(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -327,6 +341,7 @@ class MASupportScreener(BaseScreener):
 
         ma_support_valid = []
         support_ma_info = []
+        support_distance_list = []
 
         for idx, row in df.iterrows():
             stock_id = row["stock_id"]
@@ -337,35 +352,51 @@ class MASupportScreener(BaseScreener):
             if hist_data.empty or len(hist_data) < 60:
                 ma_support_valid.append(False)
                 support_ma_info.append("")
+                support_distance_list.append(np.nan)
                 continue
 
             closes = hist_data["close"]
 
-            # 計算各均線
+            # 計算各均線及斜率
             ma_values = {}
+            ma_slopes = {}
             for period in self.support_ma_periods:
                 if len(closes) >= period:
-                    ma_values[period] = closes.rolling(period).mean().iloc[-1]
+                    ma_series = closes.rolling(period).mean()
+                    ma_values[period] = ma_series.iloc[-1]
+                    # 計算斜率 (最近值 vs N日前)
+                    if len(ma_series) >= self.slope_lookback:
+                        ma_slopes[period] = ma_series.iloc[-1] > ma_series.iloc[-self.slope_lookback]
+                    else:
+                        ma_slopes[period] = False
 
-            # 檢查是否站穩均線支撐
-            # 條件: 當日最低價在某條均線上方 (允許跌破不超過 1%)
+            # 檢查是否守住均線支撐
             support_found = False
             support_info = ""
+            support_distance = np.nan
 
             for period in self.support_ma_periods:
                 if period in ma_values:
                     ma_val = ma_values[period]
-                    # 最低價在均線上方，或跌破不超過1%
-                    if low_price >= ma_val * 0.99:
+                    slope_up = ma_slopes.get(period, False)
+
+                    # 條件1: 最低價在均線上方 (允許跌破 tolerance)
+                    above_support = low_price >= ma_val * (1 - self.tolerance)
+
+                    # 條件2: 均線斜率向上
+                    if above_support and slope_up:
                         support_found = True
-                        support_info = f"MA{period}支撐"
+                        support_distance = ((current_price - ma_val) / ma_val) * 100
+                        support_info = f"MA{period}支撐 距離{support_distance:.1f}%"
                         break
 
             ma_support_valid.append(support_found)
             support_ma_info.append(support_info)
+            support_distance_list.append(support_distance)
 
         df["ma_support"] = ma_support_valid
         df["support_info"] = support_ma_info
+        df["support_distance"] = support_distance_list
 
         return df[df["ma_support"]].reset_index(drop=True)
 
@@ -701,3 +732,246 @@ class BelowForeignCostScreener(BaseScreener):
         df["discount_pct"] = discount_pct_list
 
         return df[df["foreign_cost_valid"]].reset_index(drop=True)
+
+
+# ========================================
+# 回調縮量吸籌策略篩選器
+# ========================================
+
+class PullbackScreener(BaseScreener):
+    """步驟2: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="回調狀態", step_number=2)
+        self.data_fetcher = data_fetcher
+        self.min_pullback = SCREENING_PARAMS.get("pullback_min_pct", 5.0)
+        self.max_pullback = SCREENING_PARAMS.get("pullback_max_pct", 20.0)
+        self.high_lookback = SCREENING_PARAMS.get("pullback_high_lookback_days", 20)
+        self.short_ma = SCREENING_PARAMS.get("pullback_short_ma", [5, 10])
+        self.long_ma = SCREENING_PARAMS.get("pullback_long_ma", [20, 60])
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        pullback_info = []
+        pullback_pct_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=70)
+            if hist_data.empty or len(hist_data) < 60:
+                valid_stocks.append(False)
+                pullback_info.append("")
+                pullback_pct_list.append(np.nan)
+                continue
+
+            closes = hist_data["close"]
+            highs = hist_data["high"]
+
+            # 計算均線
+            ma_values = {}
+            for period in self.short_ma + self.long_ma:
+                if len(closes) >= period:
+                    ma_values[period] = closes.rolling(period).mean().iloc[-1]
+
+            # 條件1: 跌破短期均線 (MA5 或 MA10)
+            below_short = False
+            for period in self.short_ma:
+                if period in ma_values and current_price < ma_values[period]:
+                    below_short = True
+                    break
+
+            # 條件2: 守住長期均線 (MA20 或 MA60)
+            above_long = False
+            support_ma = None
+            for period in self.long_ma:
+                if period in ma_values and current_price > ma_values[period]:
+                    above_long = True
+                    support_ma = f"MA{period}"
+                    break
+
+            # 條件3: 從近期高點回落適當幅度
+            recent_high = highs.tail(self.high_lookback).max()
+            pullback_pct = ((recent_high - current_price) / recent_high) * 100
+            proper_pullback = self.min_pullback <= pullback_pct <= self.max_pullback
+
+            # 綜合判斷
+            is_valid = below_short and above_long and proper_pullback
+
+            valid_stocks.append(is_valid)
+            pullback_pct_list.append(pullback_pct)
+
+            if is_valid:
+                pullback_info.append(f"回調{pullback_pct:.1f}% 守住{support_ma}")
+            else:
+                pullback_info.append("")
+
+        df["pullback_valid"] = valid_stocks
+        df["pullback_info"] = pullback_info
+        df["pullback_pct"] = pullback_pct_list
+
+        return df[df["pullback_valid"]].reset_index(drop=True)
+
+
+class VolumeShrinkScreener(BaseScreener):
+    """步驟3: 連續縮量篩選 - 成交量持續萎縮"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="連續縮量", step_number=3)
+        self.data_fetcher = data_fetcher
+        self.shrink_days = SCREENING_PARAMS.get("volume_shrink_days", 3)
+        self.shrink_threshold = SCREENING_PARAMS.get("volume_shrink_threshold", 0.7)
+        self.avg_days = SCREENING_PARAMS.get("volume_avg_days", 20)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        shrink_info = []
+        volume_ratio_list = []
+        shrink_days_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_volume = row["volume"]
+
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.avg_days + 5)
+            if hist_data.empty or len(hist_data) < self.avg_days:
+                valid_stocks.append(False)
+                shrink_info.append("")
+                volume_ratio_list.append(np.nan)
+                shrink_days_list.append(0)
+                continue
+
+            volumes = hist_data["volume"] / 1000  # 股 -> 張
+            avg_volume = volumes.tail(self.avg_days).mean()
+
+            # 計算連續縮量天數
+            consecutive_shrink = 0
+            recent_volumes = volumes.tail(self.shrink_days + 1).values
+            for i in range(len(recent_volumes) - 1, 0, -1):
+                if recent_volumes[i] < recent_volumes[i-1] * 1.05:  # 允許5%誤差
+                    consecutive_shrink += 1
+                else:
+                    break
+
+            # 當前量相對均量的比例
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+
+            # 條件1: 連續縮量天數 >= 門檻
+            has_consecutive_shrink = consecutive_shrink >= self.shrink_days
+
+            # 條件2: 當前量 < 均量的門檻比例
+            is_low_volume = volume_ratio < self.shrink_threshold
+
+            # 綜合判斷 (兩個條件至少符合一個)
+            is_valid = has_consecutive_shrink or is_low_volume
+
+            valid_stocks.append(is_valid)
+            volume_ratio_list.append(volume_ratio)
+            shrink_days_list.append(consecutive_shrink)
+
+            if is_valid:
+                shrink_info.append(f"量縮{consecutive_shrink}日 量比{volume_ratio:.1%}")
+            else:
+                shrink_info.append("")
+
+        df["shrink_valid"] = valid_stocks
+        df["shrink_info"] = shrink_info
+        df["volume_ratio"] = volume_ratio_list
+        df["shrink_days"] = shrink_days_list
+
+        return df[df["shrink_valid"]].reset_index(drop=True)
+
+
+class QuietAccumulationScreener(BaseScreener):
+    """步驟6: 法人悄悄建倉篩選 - 回調中法人持續買超"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="法人吸籌", step_number=6)
+        self.data_fetcher = data_fetcher
+        self.min_days = SCREENING_PARAMS.get("accumulation_min_days", 3)
+        self.max_stability = SCREENING_PARAMS.get("accumulation_max_stability", 2.0)
+        self._tracker = None
+
+    def _get_tracker(self):
+        """延遲初始化 InstitutionalTracker"""
+        if self._tracker is None:
+            from src.institutional_tracker import InstitutionalTracker
+            self._tracker = InstitutionalTracker(self.data_fetcher)
+        return self._tracker
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+        tracker = self._get_tracker()
+
+        valid_stocks = []
+        accumulation_info = []
+        foreign_consecutive_list = []
+        trust_consecutive_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 使用 InstitutionalTracker 分析法人行為
+            analysis = tracker.analyze_institutional_behavior(stock_id, days=20)
+
+            if not analysis:
+                valid_stocks.append(False)
+                accumulation_info.append("")
+                foreign_consecutive_list.append(0)
+                trust_consecutive_list.append(0)
+                continue
+
+            foreign_consecutive = analysis.get("foreign_consecutive_buy", 0)
+            trust_consecutive = analysis.get("trust_consecutive_buy", 0)
+            foreign_stability = analysis.get("foreign_stability", 99)
+            trust_stability = analysis.get("trust_stability", 99)
+            foreign_sum = analysis.get("foreign_20d_sum", 0)
+            trust_sum = analysis.get("trust_20d_sum", 0)
+
+            # 條件: 外資或投信連續買超 >= 門檻天數
+            foreign_valid = (
+                foreign_consecutive >= self.min_days and
+                foreign_stability < self.max_stability and
+                foreign_sum > 0
+            )
+            trust_valid = (
+                trust_consecutive >= self.min_days and
+                trust_stability < self.max_stability and
+                trust_sum > 0
+            )
+
+            is_valid = foreign_valid or trust_valid
+
+            valid_stocks.append(is_valid)
+            foreign_consecutive_list.append(foreign_consecutive)
+            trust_consecutive_list.append(trust_consecutive)
+
+            if foreign_valid and trust_valid:
+                accumulation_info.append(f"外資連買{foreign_consecutive}日 投信連買{trust_consecutive}日")
+            elif foreign_valid:
+                accumulation_info.append(f"外資連買{foreign_consecutive}日 累計+{foreign_sum:,}張")
+            elif trust_valid:
+                accumulation_info.append(f"投信連買{trust_consecutive}日 累計+{trust_sum:,}張")
+            else:
+                accumulation_info.append("")
+
+        df["accumulation_valid"] = valid_stocks
+        df["accumulation_info"] = accumulation_info
+        df["foreign_consecutive"] = foreign_consecutive_list
+        df["trust_consecutive"] = trust_consecutive_list
+
+        return df[df["accumulation_valid"]].reset_index(drop=True)

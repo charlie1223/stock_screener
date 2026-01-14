@@ -22,44 +22,46 @@ MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(13, 30)
 SCREENING_START = time(13, 0)   # 尾盤篩選開始時間
 
-# 篩選參數
+# 篩選參數 - 回調縮量吸籌策略
 SCREENING_PARAMS = {
-    # 步驟1: 漲幅範圍
-    "price_change_min": 3.0,    # 最小漲幅 %
-    "price_change_max": 100.0,  # 最大漲幅 % (無上限)
-
-    # 步驟2: 量比門檻
-    "volume_ratio_min": 1.0,    # 量比 > 1
-
-    # 步驟3: 換手率範圍 (放寬)
-    "turnover_rate_min": 1.0,   # 換手率 % (放寬，大型股換手率本來就低)
-    "turnover_rate_max": 20.0,  # 上限放寬
-
-    # 步驟4: 市值範圍 (億元) - 排除小型股，聚焦中大型股
+    # ========================================
+    # 步驟1: 市值篩選
+    # ========================================
     "market_cap_min": 50,       # 50億 (排除小型股，流動性較差)
     "market_cap_max": 50000,    # 5兆 (幾乎無上限)
 
-    # 步驟5: 成交量放大判斷
-    "volume_increase_days": 3,  # 連續 N 日成交量放大
+    # ========================================
+    # 步驟2: 回調狀態偵測
+    # ========================================
+    "pullback_min_pct": 5.0,              # 從高點回落最小幅度 %
+    "pullback_max_pct": 20.0,             # 從高點回落最大幅度 %
+    "pullback_high_lookback_days": 20,    # 尋找近期高點的天數
+    "pullback_short_ma": [5, 10],         # 短期均線 (需跌破其中之一)
+    "pullback_long_ma": [20, 60],         # 長期均線 (需守住其中之一)
 
-    # 步驟6: 均線設定
-    "short_ma_periods": [5, 10, 20],
-    "long_ma_period": 60,
+    # ========================================
+    # 步驟3: 連續縮量偵測
+    # ========================================
+    "volume_shrink_days": 3,              # 連續縮量天數
+    "volume_shrink_threshold": 0.7,       # 當前量需低於均量的比例 (70%)
+    "volume_avg_days": 20,                # 計算均量的天數
 
-    # 步驟8: 尾盤創新高
-    "intraday_high_threshold": 0.995,  # 接近當日最高價 99.5%
+    # ========================================
+    # 步驟4: 均線支撐偵測
+    # ========================================
+    "ma_support_periods": [20, 60],       # 支撐均線
+    "ma_support_tolerance": 0.02,         # 允許跌破支撐的比例 (2%)
+    "ma_slope_lookback_days": 5,          # 計算斜率的回看天數
 
-    # 新增: 法人持股/買超篩選
-    "institutional_buy_days": 5,        # 法人連續買超天數
-    "min_institutional_holding": 30,    # 最低法人持股比例 %
-    "max_retail_holding": 50,           # 最高散戶持股比例 %
+    # ========================================
+    # 步驟5: 換手率篩選
+    # ========================================
+    "turnover_rate_min": 0.5,             # 換手率 % (放寬，回調時換手率本來就低)
+    "turnover_rate_max": 20.0,            # 上限
 
-    # 新增: 基本面篩選
-    "min_eps": 0,                       # 最低 EPS (排除虧損股)
-    "min_revenue_growth": -10,          # 最低營收年增率 % (允許小幅衰退)
-
-    # 新增: 外資連續買超訊號 (參考 stock-tw.aiinpocket.com 策略)
-    "foreign_consecutive_buy_days": 3,  # 外資連續買超天數門檻
-    "foreign_cost_max_premium": 5.0,    # 最大允許溢價幅度 (%)，超過視為過貴
-    "foreign_cost_calculation_days": 60, # 計算外資平均成本的天數範圍
+    # ========================================
+    # 步驟6: 法人吸籌偵測
+    # ========================================
+    "accumulation_min_days": 3,           # 法人連續買超最少天數
+    "accumulation_max_stability": 2.0,    # 最大穩定度 (越小越穩定)
 }

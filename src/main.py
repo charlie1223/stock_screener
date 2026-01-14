@@ -1,5 +1,6 @@
 """
-台股尾盤選股主程式
+台股回調縮量吸籌選股主程式
+策略：回調縮量 + 守住支撐 + 法人悄悄建倉
 """
 import sys
 import logging
@@ -195,20 +196,24 @@ def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
 def main():
     """主程式入口"""
     parser = argparse.ArgumentParser(
-        description="台股選股程式 - 今日訊號 + 多頭股池 + 法人佈局追蹤",
+        description="台股回調縮量吸籌選股程式",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-三份報告:
-  1. 【今日訊號】當日漲幅>=3% + 量比 + 均線多頭 + 法人買超
-  2. 【多頭股池】體質追蹤 (均線多頭排列，不含當日漲幅條件)
-  3. 【法人佈局】追蹤法人連續買超、偷偷佈局的股票
+策略說明:
+  回調縮量吸籌 = 找出「回調但不破支撐 + 成交量萎縮 + 法人悄悄建倉」的股票
+
+篩選流程:
+  1. 市值 >= 50億 (排除小型股)
+  2. 回調狀態 (跌破短期均線、守住長期均線、從高點回落5-20%)
+  3. 連續縮量 (成交量萎縮)
+  4. 均線支撐 (守住 MA20/MA60 且斜率向上)
+  5. 換手率篩選 (確保流動性)
+  6. 法人吸籌 (連續買超、穩定建倉)
 
 範例:
-  python -m src.main              # 正常執行今日訊號篩選
+  python -m src.main              # 正常執行
   python -m src.main --force      # 強制執行 (忽略時間檢查)
-  python -m src.main -f --pool    # 執行今日訊號 + 多頭股池掃描
-  python -m src.main -f --inst    # 執行今日訊號 + 法人佈局追蹤
-  python -m src.main -f --all     # 執行所有報告
+  python -m src.main -f --inst    # 執行篩選 + 法人佈局追蹤
   python -m src.main --inst-only  # 只執行法人佈局追蹤
         """
     )
@@ -254,8 +259,8 @@ def main():
     setup_logging(verbose=args.verbose)
 
     print("\n" + "=" * 60)
-    print("  台股選股程式 v2.0")
-    print("  今日訊號 + 多頭股池 + 法人佈局追蹤")
+    print("  台股回調縮量吸籌選股程式 v3.0")
+    print("  回調縮量 + 守住支撐 + 法人悄悄建倉")
     print("=" * 60 + "\n")
 
     # 執行

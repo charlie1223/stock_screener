@@ -1008,6 +1008,7 @@ class DataFetcher:
     def get_institutional_investors(self, stock_id: str, days: int = 5) -> Dict:
         """
         獲取三大法人買賣超資料
+        優先使用 FinMind，失敗時自動切換到 TWSE/TPEx 官方 API
         Returns: {
             "foreign": {"today": int, "sum_days": int},  # 外資
             "investment_trust": {"today": int, "sum_days": int},  # 投信
@@ -1016,6 +1017,21 @@ class DataFetcher:
         }
         單位: 張
         """
+        result = {}
+
+        # 優先嘗試 FinMind (如果可用)
+        if self._finmind_available:
+            result = self._get_institutional_from_finmind(stock_id, days)
+
+        # FinMind 失敗，嘗試 TWSE/TPEx 官方 API (備援)
+        if not result:
+            logger.debug(f"{stock_id}: FinMind 法人資料失敗，切換至 TWSE/TPEx 官方 API")
+            result = self._get_institutional_from_twse(stock_id, days)
+
+        return result
+
+    def _get_institutional_from_finmind(self, stock_id: str, days: int = 5) -> Dict:
+        """從 FinMind 獲取三大法人買賣超資料"""
         try:
             from FinMind.data import DataLoader
             loader = DataLoader()
@@ -1030,7 +1046,14 @@ class DataFetcher:
             )
 
             if df.empty:
+                self._finmind_fail_count += 1
+                if self._finmind_fail_count >= self._max_fail_count:
+                    self._finmind_available = False
+                    logger.warning("FinMind API 連續失敗，切換至 TWSE/TPEx 官方 API 備援")
                 return {}
+
+            # 成功，重置失敗計數
+            self._finmind_fail_count = 0
 
             # 取最近 N 天的資料
             df = df.tail(days * 3)  # 每天有多筆資料 (外資/投信/自營商)
@@ -1076,7 +1099,10 @@ class DataFetcher:
             return result
 
         except Exception as e:
-            logger.debug(f"獲取 {stock_id} 三大法人買賣超失敗: {e}")
+            logger.debug(f"FinMind 獲取 {stock_id} 三大法人買賣超失敗: {e}")
+            self._finmind_fail_count += 1
+            if self._finmind_fail_count >= self._max_fail_count:
+                self._finmind_available = False
             return {}
 
     def get_institutional_investors_batch(self, stock_ids: List[str], days: int = 5) -> pd.DataFrame:
@@ -1246,6 +1272,7 @@ class DataFetcher:
     def get_foreign_consecutive_buy(self, stock_id: str, days: int = 10) -> Dict:
         """
         獲取外資連續買超資訊
+        優先使用 FinMind，失敗時自動切換到 TWSE/TPEx 官方 API
         Returns: {
             "consecutive_buy_days": int,  # 連續買超天數
             "total_buy_amount": int,      # 連續買超期間總買超張數
@@ -1253,6 +1280,21 @@ class DataFetcher:
             "daily_data": List[Dict]      # 每日買賣超資料
         }
         """
+        result = None
+
+        # 優先嘗試 FinMind (如果可用)
+        if self._finmind_available:
+            result = self._get_foreign_consecutive_from_finmind(stock_id, days)
+
+        # FinMind 失敗，嘗試 TWSE/TPEx 官方 API (備援)
+        if not result or result.get("consecutive_buy_days", 0) == 0:
+            logger.debug(f"{stock_id}: FinMind 外資連續買超資料失敗，切換至 TWSE/TPEx 官方 API")
+            result = self._get_foreign_consecutive_from_twse(stock_id, days)
+
+        return result or {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+
+    def _get_foreign_consecutive_from_finmind(self, stock_id: str, days: int = 10) -> Dict:
+        """從 FinMind 獲取外資連續買超資訊"""
         try:
             import os
 
@@ -1273,17 +1315,28 @@ class DataFetcher:
             response = requests.get(url, params=params, timeout=10)
             result = response.json()
 
+            # 檢查 API 限制 (402 = 額度用完)
+            if result.get("status") in [402, "402"]:
+                logger.warning("FinMind API 額度已用完，切換至 TWSE/TPEx 官方 API 備援")
+                self._finmind_fail_count += 1
+                if self._finmind_fail_count >= self._max_fail_count:
+                    self._finmind_available = False
+                return None
+
             if result.get("status") not in [200, "200"] or "data" not in result or not result["data"]:
-                return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+                return None
 
             df = pd.DataFrame(result["data"])
             if df.empty:
-                return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+                return None
+
+            # 成功，重置失敗計數
+            self._finmind_fail_count = 0
 
             # 篩選外資資料 (FinMind API 使用英文 Foreign_Investor)
             foreign_df = df[df["name"].str.contains("Foreign_Investor|外資", na=False, regex=True)]
             if foreign_df.empty:
-                return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+                return None
 
             # 按日期分組計算每日淨買超
             daily_net = foreign_df.groupby("date")[["buy", "sell"]].sum()
@@ -1311,8 +1364,9 @@ class DataFetcher:
             }
 
         except Exception as e:
-            logger.debug(f"獲取 {stock_id} 外資連續買超資料失敗: {e}")
-            return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+            logger.debug(f"FinMind 獲取 {stock_id} 外資連續買超資料失敗: {e}")
+            self._finmind_fail_count += 1
+            return None
 
     def get_foreign_average_cost(self, stock_id: str, days: int = 60) -> Dict:
         """
@@ -1397,3 +1451,300 @@ class DataFetcher:
         except Exception as e:
             logger.debug(f"獲取 {stock_id} 外資平均成本失敗: {e}")
             return {}
+
+    # ========================================
+    # TWSE 官方三大法人買賣超 API (備援)
+    # ========================================
+
+    def _fetch_twse_institutional_all(self, date_str: str = None) -> pd.DataFrame:
+        """
+        從 TWSE 官方 API 獲取所有上市股票當日三大法人買賣超
+        https://www.twse.com.tw/rwd/zh/fund/T86
+        Returns: DataFrame with columns [stock_id, foreign_buy, foreign_sell, trust_buy, trust_sell, dealer_buy, dealer_sell]
+        """
+        try:
+            if not date_str:
+                date_str = datetime.now().strftime("%Y%m%d")
+
+            url = "https://www.twse.com.tw/rwd/zh/fund/T86"
+            params = {
+                "response": "json",
+                "date": date_str,
+                "selectType": "ALLBUT0999"  # 全部(不含權證、牛熊證等)
+            }
+
+            response = requests.get(url, params=params, headers=self._get_headers(), timeout=30)
+            data = response.json()
+
+            if data.get("stat") != "OK" or "data" not in data:
+                logger.debug(f"TWSE 三大法人 API 無資料 (日期: {date_str})")
+                return pd.DataFrame()
+
+            rows = []
+            for item in data["data"]:
+                try:
+                    stock_id = item[0].strip()
+                    if not stock_id.isdigit() or len(stock_id) != 4:
+                        continue
+
+                    # 欄位順序 (新版 API):
+                    # 0:代號, 1:名稱, 2:外資買, 3:外資賣, 4:外資淨買,
+                    # 5:投信買, 6:投信賣, 7:投信淨買,
+                    # 8:自營商買(自行), 9:自營商賣(自行), 10:自營商淨買(自行),
+                    # 11:自營商買(避險), 12:自營商賣(避險), 13:自營商淨買(避險),
+                    # 14:三大法人淨買
+
+                    def parse_int(s):
+                        return int(str(s).replace(",", "").strip() or "0")
+
+                    rows.append({
+                        "stock_id": stock_id,
+                        "stock_name": item[1].strip(),
+                        "foreign_buy": parse_int(item[2]),
+                        "foreign_sell": parse_int(item[3]),
+                        "foreign_net": parse_int(item[4]),
+                        "trust_buy": parse_int(item[5]),
+                        "trust_sell": parse_int(item[6]),
+                        "trust_net": parse_int(item[7]),
+                        "dealer_buy": parse_int(item[8]) + parse_int(item[11]),
+                        "dealer_sell": parse_int(item[9]) + parse_int(item[12]),
+                        "dealer_net": parse_int(item[10]) + parse_int(item[13]),
+                        "total_net": parse_int(item[14]),
+                        "date": date_str
+                    })
+                except (ValueError, IndexError) as e:
+                    continue
+
+            if rows:
+                logger.info(f"TWSE 官方 API: 取得 {len(rows)} 檔上市股票法人買賣超")
+                return pd.DataFrame(rows)
+
+            return pd.DataFrame()
+
+        except Exception as e:
+            logger.debug(f"TWSE 三大法人 API 失敗: {e}")
+            return pd.DataFrame()
+
+    def _fetch_tpex_institutional_all(self, date_str: str = None) -> pd.DataFrame:
+        """
+        從 TPEx 官方 API 獲取所有上櫃股票當日三大法人買賣超
+        https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php
+        Returns: DataFrame with columns [stock_id, foreign_buy, foreign_sell, trust_buy, trust_sell, dealer_buy, dealer_sell]
+        """
+        try:
+            now = datetime.now()
+            if not date_str:
+                roc_year = now.year - 1911
+                date_str = f"{roc_year}/{now.strftime('%m/%d')}"
+            elif len(date_str) == 8:  # YYYYMMDD 格式轉民國年
+                year = int(date_str[:4]) - 1911
+                date_str = f"{year}/{date_str[4:6]}/{date_str[6:8]}"
+
+            url = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+            params = {
+                "l": "zh-tw",
+                "d": date_str,
+                "se": "EW",
+                "t": "D",
+                "_": int(datetime.now().timestamp() * 1000)
+            }
+
+            response = requests.get(url, params=params, headers=self._get_headers(), timeout=30)
+            data = response.json()
+
+            stock_data = None
+            if "aaData" in data:
+                stock_data = data["aaData"]
+
+            if not stock_data:
+                logger.debug(f"TPEx 三大法人 API 無資料 (日期: {date_str})")
+                return pd.DataFrame()
+
+            rows = []
+            for item in stock_data:
+                try:
+                    stock_id = str(item[0]).strip()
+                    if not stock_id.isdigit() or len(stock_id) != 4:
+                        continue
+
+                    # 欄位順序:
+                    # 0:代號, 1:名稱, 2:外資買, 3:外資賣, 4:外資淨買,
+                    # 5:投信買, 6:投信賣, 7:投信淨買,
+                    # 8:自營商買, 9:自營商賣, 10:自營商淨買,
+                    # 11:合計買, 12:合計賣, 13:合計淨買
+
+                    def parse_int(s):
+                        return int(str(s).replace(",", "").strip() or "0")
+
+                    rows.append({
+                        "stock_id": stock_id,
+                        "stock_name": str(item[1]).strip(),
+                        "foreign_buy": parse_int(item[2]),
+                        "foreign_sell": parse_int(item[3]),
+                        "foreign_net": parse_int(item[4]),
+                        "trust_buy": parse_int(item[5]),
+                        "trust_sell": parse_int(item[6]),
+                        "trust_net": parse_int(item[7]),
+                        "dealer_buy": parse_int(item[8]),
+                        "dealer_sell": parse_int(item[9]),
+                        "dealer_net": parse_int(item[10]),
+                        "total_net": parse_int(item[13]) if len(item) > 13 else 0,
+                        "date": date_str
+                    })
+                except (ValueError, IndexError) as e:
+                    continue
+
+            if rows:
+                logger.info(f"TPEx 官方 API: 取得 {len(rows)} 檔上櫃股票法人買賣超")
+                return pd.DataFrame(rows)
+
+            return pd.DataFrame()
+
+        except Exception as e:
+            logger.debug(f"TPEx 三大法人 API 失敗: {e}")
+            return pd.DataFrame()
+
+    def _get_institutional_from_twse(self, stock_id: str, days: int = 5) -> Dict:
+        """
+        從 TWSE/TPEx 官方 API 獲取單一股票三大法人買賣超 (備援)
+        Returns: 同 get_institutional_investors 格式
+        """
+        try:
+            all_data = []
+
+            # 取得近 N 天的交易日
+            for i in range(days * 2):  # 多取一些天數，因為有假日
+                target_date = datetime.now() - timedelta(days=i)
+                date_str = target_date.strftime("%Y%m%d")
+
+                # 先嘗試 TWSE (上市)
+                twse_df = self._fetch_twse_institutional_all(date_str)
+                if not twse_df.empty:
+                    stock_row = twse_df[twse_df["stock_id"] == stock_id]
+                    if not stock_row.empty:
+                        row = stock_row.iloc[0]
+                        all_data.append({
+                            "date": date_str,
+                            "foreign_net": row["foreign_net"] // 1000,  # 股 -> 張
+                            "trust_net": row["trust_net"] // 1000,
+                            "dealer_net": row["dealer_net"] // 1000,
+                            "total_net": row["total_net"] // 1000
+                        })
+                        if len(all_data) >= days:
+                            break
+                        continue
+
+                # 嘗試 TPEx (上櫃)
+                tpex_df = self._fetch_tpex_institutional_all(date_str)
+                if not tpex_df.empty:
+                    stock_row = tpex_df[tpex_df["stock_id"] == stock_id]
+                    if not stock_row.empty:
+                        row = stock_row.iloc[0]
+                        all_data.append({
+                            "date": date_str,
+                            "foreign_net": row["foreign_net"] // 1000,
+                            "trust_net": row["trust_net"] // 1000,
+                            "dealer_net": row["dealer_net"] // 1000,
+                            "total_net": row["total_net"] // 1000
+                        })
+                        if len(all_data) >= days:
+                            break
+
+                time_module.sleep(0.3)  # 避免請求過快
+
+            if not all_data:
+                return {}
+
+            # 整理結果
+            result = {
+                "foreign": {"today": 0, "sum_days": 0},
+                "investment_trust": {"today": 0, "sum_days": 0},
+                "dealer": {"today": 0, "sum_days": 0},
+                "total": {"today": 0, "sum_days": 0}
+            }
+
+            # 今日資料
+            if all_data:
+                result["foreign"]["today"] = all_data[0]["foreign_net"]
+                result["investment_trust"]["today"] = all_data[0]["trust_net"]
+                result["dealer"]["today"] = all_data[0]["dealer_net"]
+                result["total"]["today"] = all_data[0]["total_net"]
+
+            # N 日累計
+            for d in all_data:
+                result["foreign"]["sum_days"] += d["foreign_net"]
+                result["investment_trust"]["sum_days"] += d["trust_net"]
+                result["dealer"]["sum_days"] += d["dealer_net"]
+                result["total"]["sum_days"] += d["total_net"]
+
+            return result
+
+        except Exception as e:
+            logger.debug(f"TWSE/TPEx 備援獲取 {stock_id} 法人買賣超失敗: {e}")
+            return {}
+
+    def _get_foreign_consecutive_from_twse(self, stock_id: str, days: int = 10) -> Dict:
+        """
+        從 TWSE/TPEx 官方 API 獲取外資連續買超資訊 (備援)
+        Returns: 同 get_foreign_consecutive_buy 格式
+        """
+        try:
+            daily_data = []
+
+            # 取得近 N 天的交易日
+            for i in range(days * 2):
+                target_date = datetime.now() - timedelta(days=i)
+                date_str = target_date.strftime("%Y%m%d")
+
+                # 先嘗試 TWSE
+                twse_df = self._fetch_twse_institutional_all(date_str)
+                if not twse_df.empty:
+                    stock_row = twse_df[twse_df["stock_id"] == stock_id]
+                    if not stock_row.empty:
+                        row = stock_row.iloc[0]
+                        daily_data.append({
+                            "date": date_str,
+                            "net_buy": row["foreign_net"] // 1000
+                        })
+                        if len(daily_data) >= days:
+                            break
+                        continue
+
+                # 嘗試 TPEx
+                tpex_df = self._fetch_tpex_institutional_all(date_str)
+                if not tpex_df.empty:
+                    stock_row = tpex_df[tpex_df["stock_id"] == stock_id]
+                    if not stock_row.empty:
+                        row = stock_row.iloc[0]
+                        daily_data.append({
+                            "date": date_str,
+                            "net_buy": row["foreign_net"] // 1000
+                        })
+                        if len(daily_data) >= days:
+                            break
+
+                time_module.sleep(0.3)
+
+            if not daily_data:
+                return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}
+
+            # 計算連續買超天數 (從最新日期往前算)
+            consecutive_days = 0
+            total_buy = 0
+            for d in daily_data:  # 已經是從最新到最舊排序
+                if d["net_buy"] > 0:
+                    consecutive_days += 1
+                    total_buy += d["net_buy"]
+                else:
+                    break
+
+            return {
+                "consecutive_buy_days": consecutive_days,
+                "total_buy_amount": int(total_buy),
+                "is_consecutive": consecutive_days >= 3,
+                "daily_data": daily_data
+            }
+
+        except Exception as e:
+            logger.debug(f"TWSE/TPEx 備援獲取 {stock_id} 外資連續買超失敗: {e}")
+            return {"consecutive_buy_days": 0, "total_buy_amount": 0, "is_consecutive": False, "daily_data": []}

@@ -71,6 +71,7 @@ SCREENING_PARAMS = {
     "rsi_period": 14,                     # RSI 計算週期
     "rsi_oversold": 35,                   # RSI 超賣門檻 (低於此值為超賣)
     "rsi_require_upturn": True,           # 是否要求 RSI 觸底回升 (今日 > 昨日)
+    "rsi_require_above_ma5": True,        # 是否要求收盤價站回 MA5 (確認價格回升)
 
     # ========================================
     # 步驟8: 換手率篩選 (流動性)

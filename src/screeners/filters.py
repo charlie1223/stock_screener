@@ -1209,17 +1209,27 @@ class PERatioScreener(BaseScreener):
 
 
 class RSIOversoldScreener(BaseScreener):
-    """步驟7: RSI 超賣篩選 - 技術面確認超賣且觸底回升"""
+    """步驟7: RSI 超賣篩選 - 技術面確認超賣且觸底回升 + 站回MA5"""
 
     def __init__(self, data_fetcher):
         rsi_threshold = SCREENING_PARAMS.get("rsi_oversold", 35)
         require_upturn = SCREENING_PARAMS.get("rsi_require_upturn", True)
-        name = f"RSI < {rsi_threshold}" + (" 回升" if require_upturn else "")
+        require_above_ma5 = SCREENING_PARAMS.get("rsi_require_above_ma5", True)
+
+        # 組合篩選器名稱
+        name_parts = [f"RSI < {rsi_threshold}"]
+        if require_upturn:
+            name_parts.append("回升")
+        if require_above_ma5:
+            name_parts.append("站MA5")
+        name = " ".join(name_parts)
+
         super().__init__(name=name, step_number=7)
         self.data_fetcher = data_fetcher
         self.rsi_period = SCREENING_PARAMS.get("rsi_period", 14)
         self.rsi_oversold = rsi_threshold
         self.require_upturn = require_upturn
+        self.require_above_ma5 = require_above_ma5
 
     def screen(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -1233,9 +1243,10 @@ class RSIOversoldScreener(BaseScreener):
 
         for idx, row in df.iterrows():
             stock_id = row["stock_id"]
+            current_price = row["price"]
 
-            # 計算 RSI (包含今日和昨日)
-            rsi_data = self._calculate_rsi_with_trend(stock_id)
+            # 計算 RSI 和 MA5
+            rsi_data = self._calculate_rsi_and_ma5(stock_id)
 
             if rsi_data is None:
                 valid_stocks.append(True)  # 無資料時保留
@@ -1243,22 +1254,30 @@ class RSIOversoldScreener(BaseScreener):
                 rsi_list.append(np.nan)
                 continue
 
-            rsi_today = rsi_data["today"]
-            rsi_yesterday = rsi_data["yesterday"]
-            is_upturn = rsi_today > rsi_yesterday
+            rsi_today = rsi_data["rsi_today"]
+            rsi_yesterday = rsi_data["rsi_yesterday"]
+            ma5 = rsi_data["ma5"]
 
-            # 條件: RSI <= 超賣門檻 + 觸底回升 (如果啟用)
+            is_upturn = rsi_today > rsi_yesterday
+            is_above_ma5 = current_price > ma5
+
+            # 條件組合
             is_oversold = rsi_today <= self.rsi_oversold
+            is_valid = is_oversold
+
             if self.require_upturn:
-                is_valid = is_oversold and is_upturn
-            else:
-                is_valid = is_oversold
+                is_valid = is_valid and is_upturn
+            if self.require_above_ma5:
+                is_valid = is_valid and is_above_ma5
 
             valid_stocks.append(is_valid)
             rsi_list.append(rsi_today)
 
+            # 產生說明文字
             if is_valid:
-                rsi_info.append(f"RSI {rsi_today:.1f} 觸底回升")
+                rsi_info.append(f"RSI {rsi_today:.1f} 觸底回升 站MA5")
+            elif is_oversold and is_upturn and not is_above_ma5:
+                rsi_info.append(f"RSI {rsi_today:.1f} 回升但未站MA5")
             elif is_oversold and not is_upturn:
                 rsi_info.append(f"RSI {rsi_today:.1f} 仍在下探")
             else:
@@ -1270,14 +1289,17 @@ class RSIOversoldScreener(BaseScreener):
 
         return df[df["rsi_valid"]].reset_index(drop=True)
 
-    def _calculate_rsi_with_trend(self, stock_id: str) -> Optional[Dict]:
-        """計算 RSI (含今日和昨日，用於判斷趨勢)"""
+    def _calculate_rsi_and_ma5(self, stock_id: str) -> Optional[Dict]:
+        """計算 RSI 和 MA5"""
         try:
             hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.rsi_period + 15)
             if hist_data.empty or len(hist_data) < self.rsi_period + 2:
                 return None
 
             closes = hist_data["close"]
+
+            # 計算 MA5
+            ma5 = closes.rolling(5).mean().iloc[-1]
 
             # 計算漲跌幅
             delta = closes.diff()
@@ -1295,8 +1317,9 @@ class RSIOversoldScreener(BaseScreener):
             rsi = 100 - (100 / (1 + rs))
 
             return {
-                "today": round(rsi.iloc[-1], 1),
-                "yesterday": round(rsi.iloc[-2], 1)
+                "rsi_today": round(rsi.iloc[-1], 1),
+                "rsi_yesterday": round(rsi.iloc[-2], 1),
+                "ma5": ma5
             }
 
         except Exception as e:

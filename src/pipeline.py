@@ -15,6 +15,10 @@ from src.screeners.filters import (
     VolumeShrinkScreener,
     MASupportScreener,
     QuietAccumulationScreener,
+    RevenueGrowthScreener,
+    PERatioScreener,
+    RSIOversoldScreener,
+    MajorHolderScreener,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,25 +139,43 @@ class ScreeningPipeline:
 
     def _init_screeners(self) -> List:
         """
-        初始化篩選器 - 回調縮量吸籌策略
+        初始化篩選器 - 回調縮量吸籌策略 (增強版)
+        順序邏輯: 基本面 → 技術面 → 籌碼面
         """
         screeners = [
+            # ========== 快速排除 ==========
             # 步驟1: 市值篩選 (快速排除小型股)
             MarketCapScreener(self.data_fetcher),
 
-            # 步驟2: 回調狀態 (跌破短期均線、守住長期均線)
+            # ========== 基本面篩選 ==========
+            # 步驟2: 營收成長 (確保不是爛股票)
+            RevenueGrowthScreener(self.data_fetcher),
+
+            # 步驟3: 本益比篩選 (價值股)
+            PERatioScreener(self.data_fetcher),
+
+            # ========== 技術面篩選 ==========
+            # 步驟4: 回調狀態 (跌破短期均線、守住長期均線)
             PullbackScreener(self.data_fetcher),
 
-            # 步驟3: 連續縮量 (成交量萎縮)
+            # 步驟5: 連續縮量 (成交量萎縮)
             VolumeShrinkScreener(self.data_fetcher),
 
-            # 步驟4: 均線支撐 (守住 MA20/MA60 且斜率向上)
+            # 步驟6: 均線支撐 (守住 MA20/MA60 且斜率向上)
             MASupportScreener(self.data_fetcher),
 
-            # 步驟5: 換手率篩選 (確保流動性)
+            # 步驟7: RSI 超賣 (技術面確認超賣)
+            RSIOversoldScreener(self.data_fetcher),
+
+            # ========== 流動性篩選 ==========
+            # 步驟8: 換手率篩選 (確保流動性)
             TurnoverRateScreener(self.data_fetcher),
 
-            # 步驟6: 法人吸籌 (連續買超、穩定建倉)
+            # ========== 籌碼面篩選 ==========
+            # 步驟9: 大戶持股 (籌碼集中)
+            MajorHolderScreener(self.data_fetcher),
+
+            # 步驟10: 法人吸籌 (連續買超、穩定建倉)
             QuietAccumulationScreener(self.data_fetcher),
         ]
 

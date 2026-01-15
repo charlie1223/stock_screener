@@ -259,8 +259,8 @@ def main():
     setup_logging(verbose=args.verbose)
 
     print("\n" + "=" * 60)
-    print("  台股回調縮量吸籌選股程式 v3.0")
-    print("  回調縮量 + 守住支撐 + 法人悄悄建倉")
+    print("  台股回調縮量吸籌選股程式 v4.0 (增強版)")
+    print("  基本面 + 技術面 + 籌碼面 多維度篩選")
     print("=" * 60 + "\n")
 
     # 執行

@@ -4,7 +4,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from .base import BaseScreener
 from config.settings import SCREENING_PARAMS
@@ -975,3 +975,449 @@ class QuietAccumulationScreener(BaseScreener):
         df["trust_consecutive"] = trust_consecutive_list
 
         return df[df["accumulation_valid"]].reset_index(drop=True)
+
+
+# ========================================
+# 新增篩選器 - 基本面、技術面、籌碼面
+# ========================================
+
+class RevenueGrowthScreener(BaseScreener):
+    """步驟2: 營收成長篩選 - 確保基本面健康"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="營收成長", step_number=2)
+        self.data_fetcher = data_fetcher
+        self.min_growth = SCREENING_PARAMS.get("revenue_growth_min", 0)
+        self.months_positive = SCREENING_PARAMS.get("revenue_months_positive", 2)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        revenue_info = []
+        growth_pct_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取營收資料
+            revenue_data = self._get_revenue_data(stock_id)
+
+            if not revenue_data:
+                # 無資料時保留股票 (避免誤殺)
+                valid_stocks.append(True)
+                revenue_info.append("資料不足")
+                growth_pct_list.append(np.nan)
+                continue
+
+            latest_growth = revenue_data.get("latest_growth", 0)
+            positive_months = revenue_data.get("positive_months", 0)
+
+            # 條件: 最新營收年增率 >= 門檻 且 近N月有正成長
+            is_valid = latest_growth >= self.min_growth and positive_months >= self.months_positive
+
+            valid_stocks.append(is_valid)
+            growth_pct_list.append(latest_growth)
+
+            if is_valid:
+                revenue_info.append(f"營收YoY {latest_growth:+.1f}% 連{positive_months}月正成長")
+            else:
+                revenue_info.append(f"營收YoY {latest_growth:+.1f}%")
+
+        df["revenue_valid"] = valid_stocks
+        df["revenue_info"] = revenue_info
+        df["revenue_growth"] = growth_pct_list
+
+        return df[df["revenue_valid"]].reset_index(drop=True)
+
+    def _get_revenue_data(self, stock_id: str) -> Dict:
+        """獲取營收資料"""
+        try:
+            import os
+            import requests
+            from datetime import datetime, timedelta
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+
+            url = "https://api.finmindtrade.com/api/v4/data"
+            params = {
+                "dataset": "TaiwanStockMonthRevenue",
+                "data_id": stock_id,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            token = os.getenv("FINMIND_API_TOKEN", "")
+            if token:
+                params["token"] = token
+
+            response = requests.get(url, params=params, timeout=10)
+            result = response.json()
+
+            if result.get("status") not in [200, "200"] or not result.get("data"):
+                return {}
+
+            df_rev = pd.DataFrame(result["data"])
+            if df_rev.empty:
+                return {}
+
+            # 計算年增率
+            if "revenue_year_growth_rate" in df_rev.columns:
+                growth_rates = df_rev["revenue_year_growth_rate"].tail(6).tolist()
+            elif "revenue" in df_rev.columns and len(df_rev) >= 13:
+                # 手動計算
+                growth_rates = []
+                for i in range(-6, 0):
+                    if len(df_rev) >= abs(i) + 12:
+                        current = df_rev.iloc[i]["revenue"]
+                        year_ago = df_rev.iloc[i - 12]["revenue"]
+                        if year_ago > 0:
+                            growth_rates.append((current - year_ago) / year_ago * 100)
+            else:
+                return {}
+
+            if not growth_rates:
+                return {}
+
+            # 計算連續正成長月數
+            positive_months = 0
+            for g in reversed(growth_rates):
+                if g > 0:
+                    positive_months += 1
+                else:
+                    break
+
+            return {
+                "latest_growth": round(growth_rates[-1], 1) if growth_rates else 0,
+                "positive_months": positive_months
+            }
+
+        except Exception as e:
+            return {}
+
+
+class PERatioScreener(BaseScreener):
+    """步驟3: 本益比篩選 - 價值股篩選"""
+
+    def __init__(self, data_fetcher):
+        pe_max = SCREENING_PARAMS.get("pe_ratio_max", 20)
+        super().__init__(name=f"本益比 < {pe_max}", step_number=3)
+        self.data_fetcher = data_fetcher
+        self.pe_min = SCREENING_PARAMS.get("pe_ratio_min", 0)
+        self.pe_max = pe_max
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        pe_info = []
+        pe_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+
+            # 獲取 EPS 資料
+            pe_data = self._get_pe_data(stock_id, current_price)
+
+            if not pe_data:
+                # 無資料時保留股票
+                valid_stocks.append(True)
+                pe_info.append("資料不足")
+                pe_list.append(np.nan)
+                continue
+
+            pe_ratio = pe_data.get("pe_ratio", 0)
+            eps = pe_data.get("eps", 0)
+
+            # 條件: PE > 0 (獲利) 且 PE <= 門檻
+            is_valid = self.pe_min < pe_ratio <= self.pe_max
+
+            valid_stocks.append(is_valid)
+            pe_list.append(pe_ratio)
+
+            if is_valid:
+                pe_info.append(f"PE {pe_ratio:.1f} EPS {eps:.2f}")
+            elif pe_ratio <= 0:
+                pe_info.append(f"虧損股 EPS {eps:.2f}")
+            else:
+                pe_info.append(f"PE {pe_ratio:.1f} 過高")
+
+        df["pe_valid"] = valid_stocks
+        df["pe_info"] = pe_info
+        df["pe_ratio"] = pe_list
+
+        return df[df["pe_valid"]].reset_index(drop=True)
+
+    def _get_pe_data(self, stock_id: str, current_price: float) -> Dict:
+        """獲取本益比資料"""
+        try:
+            import os
+            import requests
+            from datetime import datetime, timedelta
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+
+            url = "https://api.finmindtrade.com/api/v4/data"
+            params = {
+                "dataset": "TaiwanStockFinancialStatements",
+                "data_id": stock_id,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            token = os.getenv("FINMIND_API_TOKEN", "")
+            if token:
+                params["token"] = token
+
+            response = requests.get(url, params=params, timeout=10)
+            result = response.json()
+
+            if result.get("status") not in [200, "200"] or not result.get("data"):
+                return {}
+
+            df_fin = pd.DataFrame(result["data"])
+            if df_fin.empty:
+                return {}
+
+            # 找 EPS 欄位
+            eps_df = df_fin[df_fin["type"] == "EPS"]
+            if eps_df.empty:
+                return {}
+
+            # 取最近 4 季 EPS 加總
+            eps = eps_df.tail(4)["value"].sum()
+
+            if eps <= 0:
+                return {"eps": round(eps, 2), "pe_ratio": 0}
+
+            pe_ratio = current_price / eps
+
+            return {
+                "eps": round(eps, 2),
+                "pe_ratio": round(pe_ratio, 1)
+            }
+
+        except Exception as e:
+            return {}
+
+
+class RSIOversoldScreener(BaseScreener):
+    """步驟7: RSI 超賣篩選 - 技術面確認超賣"""
+
+    def __init__(self, data_fetcher):
+        rsi_threshold = SCREENING_PARAMS.get("rsi_oversold", 35)
+        super().__init__(name=f"RSI < {rsi_threshold}", step_number=7)
+        self.data_fetcher = data_fetcher
+        self.rsi_period = SCREENING_PARAMS.get("rsi_period", 14)
+        self.rsi_oversold = rsi_threshold
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        rsi_info = []
+        rsi_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 計算 RSI
+            rsi = self._calculate_rsi(stock_id)
+
+            if rsi is None:
+                valid_stocks.append(True)  # 無資料時保留
+                rsi_info.append("資料不足")
+                rsi_list.append(np.nan)
+                continue
+
+            # 條件: RSI <= 超賣門檻
+            is_valid = rsi <= self.rsi_oversold
+
+            valid_stocks.append(is_valid)
+            rsi_list.append(rsi)
+
+            if is_valid:
+                rsi_info.append(f"RSI {rsi:.1f} 超賣")
+            else:
+                rsi_info.append(f"RSI {rsi:.1f}")
+
+        df["rsi_valid"] = valid_stocks
+        df["rsi_info"] = rsi_info
+        df["rsi"] = rsi_list
+
+        return df[df["rsi_valid"]].reset_index(drop=True)
+
+    def _calculate_rsi(self, stock_id: str) -> Optional[float]:
+        """計算 RSI"""
+        try:
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.rsi_period + 10)
+            if hist_data.empty or len(hist_data) < self.rsi_period:
+                return None
+
+            closes = hist_data["close"]
+
+            # 計算漲跌幅
+            delta = closes.diff()
+
+            # 分離漲跌
+            gain = delta.where(delta > 0, 0)
+            loss = (-delta).where(delta < 0, 0)
+
+            # 計算平均漲跌 (使用 EMA)
+            avg_gain = gain.ewm(span=self.rsi_period, adjust=False).mean()
+            avg_loss = loss.ewm(span=self.rsi_period, adjust=False).mean()
+
+            # 計算 RS 和 RSI
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+
+            return round(rsi.iloc[-1], 1)
+
+        except Exception as e:
+            return None
+
+
+class MajorHolderScreener(BaseScreener):
+    """步驟9: 大戶持股篩選 - 千張大戶持股比例及變化"""
+
+    def __init__(self, data_fetcher):
+        min_pct = SCREENING_PARAMS.get("major_holder_min_pct", 30)
+        super().__init__(name=f"大戶持股 >= {min_pct}%", step_number=9)
+        self.data_fetcher = data_fetcher
+        self.min_pct = min_pct
+        self.increase_weeks = SCREENING_PARAMS.get("major_holder_increase_weeks", 1)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        holder_info = []
+        holder_pct_list = []
+        holder_change_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            # 獲取大戶持股資料
+            holder_data = self._get_major_holder_data(stock_id)
+
+            if not holder_data:
+                valid_stocks.append(True)  # 無資料時保留
+                holder_info.append("資料不足")
+                holder_pct_list.append(np.nan)
+                holder_change_list.append(np.nan)
+                continue
+
+            current_pct = holder_data.get("current_pct", 0)
+            pct_change = holder_data.get("pct_change", 0)
+            increase_weeks = holder_data.get("increase_weeks", 0)
+
+            # 條件: 大戶持股 >= 門檻 且 持股有增加
+            is_valid = current_pct >= self.min_pct and increase_weeks >= self.increase_weeks
+
+            valid_stocks.append(is_valid)
+            holder_pct_list.append(current_pct)
+            holder_change_list.append(pct_change)
+
+            if is_valid:
+                holder_info.append(f"大戶 {current_pct:.1f}% 連增{increase_weeks}週 {pct_change:+.1f}%")
+            else:
+                holder_info.append(f"大戶 {current_pct:.1f}% {pct_change:+.1f}%")
+
+        df["holder_valid"] = valid_stocks
+        df["holder_info"] = holder_info
+        df["major_holder_pct"] = holder_pct_list
+        df["holder_change"] = holder_change_list
+
+        return df[df["holder_valid"]].reset_index(drop=True)
+
+    def _get_major_holder_data(self, stock_id: str) -> Dict:
+        """獲取大戶持股資料 (千張以上大戶)"""
+        try:
+            import os
+            import requests
+            from datetime import datetime, timedelta
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+
+            url = "https://api.finmindtrade.com/api/v4/data"
+            params = {
+                "dataset": "TaiwanStockHoldingSharesPer",
+                "data_id": stock_id,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            token = os.getenv("FINMIND_API_TOKEN", "")
+            if token:
+                params["token"] = token
+
+            response = requests.get(url, params=params, timeout=10)
+            result = response.json()
+
+            if result.get("status") not in [200, "200"] or not result.get("data"):
+                return {}
+
+            df_holder = pd.DataFrame(result["data"])
+            if df_holder.empty:
+                return {}
+
+            # 篩選 1000 張以上的大戶 (HoldingSharesLevel >= 15 通常是大戶)
+            # FinMind 的 HoldingSharesLevel: 1-15, 15 是 1000張以上
+            major_df = df_holder[df_holder["HoldingSharesLevel"] == "15"]
+
+            if major_df.empty:
+                # 嘗試其他方式: 找最大持股級距
+                major_df = df_holder[df_holder["HoldingSharesLevel"].astype(str).str.contains("1000|more", na=False)]
+
+            if major_df.empty:
+                return {}
+
+            # 按日期排序
+            major_df = major_df.sort_values("date")
+
+            # 取最近幾週的資料
+            recent_data = major_df.tail(4)  # 約4週
+
+            if recent_data.empty:
+                return {}
+
+            current_pct = recent_data.iloc[-1]["percent"]
+
+            # 計算持股變化
+            if len(recent_data) >= 2:
+                prev_pct = recent_data.iloc[-2]["percent"]
+                pct_change = current_pct - prev_pct
+            else:
+                pct_change = 0
+
+            # 計算連續增加週數
+            increase_weeks = 0
+            pcts = recent_data["percent"].tolist()
+            for i in range(len(pcts) - 1, 0, -1):
+                if pcts[i] > pcts[i - 1]:
+                    increase_weeks += 1
+                else:
+                    break
+
+            return {
+                "current_pct": round(current_pct, 1),
+                "pct_change": round(pct_change, 2),
+                "increase_weeks": increase_weeks
+            }
+
+        except Exception as e:
+            return {}

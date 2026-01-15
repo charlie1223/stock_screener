@@ -1209,14 +1209,17 @@ class PERatioScreener(BaseScreener):
 
 
 class RSIOversoldScreener(BaseScreener):
-    """步驟7: RSI 超賣篩選 - 技術面確認超賣"""
+    """步驟7: RSI 超賣篩選 - 技術面確認超賣且觸底回升"""
 
     def __init__(self, data_fetcher):
         rsi_threshold = SCREENING_PARAMS.get("rsi_oversold", 35)
-        super().__init__(name=f"RSI < {rsi_threshold}", step_number=7)
+        require_upturn = SCREENING_PARAMS.get("rsi_require_upturn", True)
+        name = f"RSI < {rsi_threshold}" + (" 回升" if require_upturn else "")
+        super().__init__(name=name, step_number=7)
         self.data_fetcher = data_fetcher
         self.rsi_period = SCREENING_PARAMS.get("rsi_period", 14)
         self.rsi_oversold = rsi_threshold
+        self.require_upturn = require_upturn
 
     def screen(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -1231,25 +1234,35 @@ class RSIOversoldScreener(BaseScreener):
         for idx, row in df.iterrows():
             stock_id = row["stock_id"]
 
-            # 計算 RSI
-            rsi = self._calculate_rsi(stock_id)
+            # 計算 RSI (包含今日和昨日)
+            rsi_data = self._calculate_rsi_with_trend(stock_id)
 
-            if rsi is None:
+            if rsi_data is None:
                 valid_stocks.append(True)  # 無資料時保留
                 rsi_info.append("資料不足")
                 rsi_list.append(np.nan)
                 continue
 
-            # 條件: RSI <= 超賣門檻
-            is_valid = rsi <= self.rsi_oversold
+            rsi_today = rsi_data["today"]
+            rsi_yesterday = rsi_data["yesterday"]
+            is_upturn = rsi_today > rsi_yesterday
+
+            # 條件: RSI <= 超賣門檻 + 觸底回升 (如果啟用)
+            is_oversold = rsi_today <= self.rsi_oversold
+            if self.require_upturn:
+                is_valid = is_oversold and is_upturn
+            else:
+                is_valid = is_oversold
 
             valid_stocks.append(is_valid)
-            rsi_list.append(rsi)
+            rsi_list.append(rsi_today)
 
             if is_valid:
-                rsi_info.append(f"RSI {rsi:.1f} 超賣")
+                rsi_info.append(f"RSI {rsi_today:.1f} 觸底回升")
+            elif is_oversold and not is_upturn:
+                rsi_info.append(f"RSI {rsi_today:.1f} 仍在下探")
             else:
-                rsi_info.append(f"RSI {rsi:.1f}")
+                rsi_info.append(f"RSI {rsi_today:.1f}")
 
         df["rsi_valid"] = valid_stocks
         df["rsi_info"] = rsi_info
@@ -1257,11 +1270,11 @@ class RSIOversoldScreener(BaseScreener):
 
         return df[df["rsi_valid"]].reset_index(drop=True)
 
-    def _calculate_rsi(self, stock_id: str) -> Optional[float]:
-        """計算 RSI"""
+    def _calculate_rsi_with_trend(self, stock_id: str) -> Optional[Dict]:
+        """計算 RSI (含今日和昨日，用於判斷趨勢)"""
         try:
-            hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.rsi_period + 10)
-            if hist_data.empty or len(hist_data) < self.rsi_period:
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.rsi_period + 15)
+            if hist_data.empty or len(hist_data) < self.rsi_period + 2:
                 return None
 
             closes = hist_data["close"]
@@ -1281,7 +1294,10 @@ class RSIOversoldScreener(BaseScreener):
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
 
-            return round(rsi.iloc[-1], 1)
+            return {
+                "today": round(rsi.iloc[-1], 1),
+                "yesterday": round(rsi.iloc[-2], 1)
+            }
 
         except Exception as e:
             return None

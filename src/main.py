@@ -20,6 +20,7 @@ from src.pipeline import ScreeningPipeline
 from src.output import TerminalDisplay, CSVExporter
 from src.bullish_pool import BullishPoolTracker
 from src.institutional_tracker import InstitutionalTracker
+from src.notifier import get_notifier
 
 
 def setup_logging(verbose: bool = False):
@@ -95,6 +96,16 @@ def run_screener(force: bool = False, scan_pool: bool = False):
         filepath = exporter.export(results)
         if filepath:
             print(f"最終結果已儲存至: {filepath}")
+
+    # === Discord 通知 ===
+    notifier = get_notifier()
+    if notifier.enabled:
+        logging.info("正在發送 Discord 通知...")
+        # 發送逐步篩選摘要
+        if step_results:
+            notifier.send_step_summary(step_results)
+        # 發送最終選股結果
+        notifier.send_screening_results(results, "回調縮量吸籌策略 v4.0")
 
     # === 多頭股池追蹤 ===
     if scan_pool:

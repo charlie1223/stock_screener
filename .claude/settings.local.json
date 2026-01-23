@@ -4,7 +4,9 @@
       "Bash(ls:*)",
       "Bash(source venv/bin/activate)",
       "Bash(python -c \"\nimport requests\nimport json\n\n# FinMind 股票基本資訊 \\(含產業分類\\)\nurl = ''https://api.finmindtrade.com/api/v4/data''\nparams = {\n    ''dataset'': ''TaiwanStockInfo'',\n}\nresp = requests.get\\(url, params=params, timeout=15\\)\ndata = resp.json\\(\\)\n\nif ''data'' in data and data[''data'']:\n    # 顯示前 5 筆\n    for item in data[''data''][:5]:\n        print\\(item\\)\n    print\\(''...''\\)\n    print\\(''總筆數:'', len\\(data[''data'']\\)\\)\n\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(printf:*)",
+      "Bash(crontab:*)"
     ]
   }
 }

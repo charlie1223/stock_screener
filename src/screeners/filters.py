@@ -78,12 +78,12 @@ class VolumeRatioScreener(BaseScreener):
 
 
 class TurnoverRateScreener(BaseScreener):
-    """步驟5: 換手率篩選"""
+    """步驟8: 換手率篩選"""
 
     def __init__(self, data_fetcher):
         min_rate = SCREENING_PARAMS.get("turnover_rate_min", 0.5)
         max_rate = SCREENING_PARAMS.get("turnover_rate_max", 20.0)
-        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=5)
+        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=8)
         self.min_rate = min_rate
         self.max_rate = max_rate
         self.data_fetcher = data_fetcher
@@ -324,10 +324,10 @@ class IntradayHighScreener(BaseScreener):
 
 
 class MASupportScreener(BaseScreener):
-    """步驟4: 均線支撐篩選 - 守住長期均線且斜率向上"""
+    """步驟6: 均線支撐篩選 - 守住長期均線且斜率向上"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="均線支撐", step_number=4)
+        super().__init__(name="均線支撐", step_number=6)
         self.data_fetcher = data_fetcher
         self.support_ma_periods = SCREENING_PARAMS.get("ma_support_periods", [20, 60])
         self.tolerance = SCREENING_PARAMS.get("ma_support_tolerance", 0.02)
@@ -739,10 +739,10 @@ class BelowForeignCostScreener(BaseScreener):
 # ========================================
 
 class PullbackScreener(BaseScreener):
-    """步驟2: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
+    """步驟4: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="回調狀態", step_number=2)
+        super().__init__(name="回調狀態", step_number=4)
         self.data_fetcher = data_fetcher
         self.min_pullback = SCREENING_PARAMS.get("pullback_min_pct", 5.0)
         self.max_pullback = SCREENING_PARAMS.get("pullback_max_pct", 20.0)
@@ -820,10 +820,10 @@ class PullbackScreener(BaseScreener):
 
 
 class VolumeShrinkScreener(BaseScreener):
-    """步驟3: 連續縮量篩選 - 成交量持續萎縮"""
+    """步驟5: 連續縮量篩選 - 成交量持續萎縮"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="連續縮量", step_number=3)
+        super().__init__(name="連續縮量", step_number=5)
         self.data_fetcher = data_fetcher
         self.shrink_days = SCREENING_PARAMS.get("volume_shrink_days", 3)
         self.shrink_threshold = SCREENING_PARAMS.get("volume_shrink_threshold", 0.7)
@@ -894,10 +894,10 @@ class VolumeShrinkScreener(BaseScreener):
 
 
 class QuietAccumulationScreener(BaseScreener):
-    """步驟6: 法人悄悄建倉篩選 - 回調中法人持續買超"""
+    """步驟10: 法人悄悄建倉篩選 - 回調中法人持續買超"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="法人吸籌", step_number=6)
+        super().__init__(name="法人吸籌", step_number=10)
         self.data_fetcher = data_fetcher
         self.min_days = SCREENING_PARAMS.get("accumulation_min_days", 3)
         self.max_stability = SCREENING_PARAMS.get("accumulation_max_stability", 2.0)

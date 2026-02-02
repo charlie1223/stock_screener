@@ -17,6 +17,7 @@ from src.screeners.filters import (
     QuietAccumulationScreener,
     RevenueGrowthScreener,
     PERatioScreener,
+    HigherLowsScreener,
     RSIOversoldScreener,
     MajorHolderScreener,
 )
@@ -154,28 +155,32 @@ class ScreeningPipeline:
             # 步驟3: 本益比篩選 (價值股)
             PERatioScreener(self.data_fetcher),
 
+            # ========== 趨勢確認 ==========
+            # 步驟4: 底底高確認 (上升趨勢仍在，低點持續墊高)
+            HigherLowsScreener(self.data_fetcher),
+
             # ========== 技術面篩選 ==========
-            # 步驟4: 回調狀態 (跌破短期均線、守住長期均線)
+            # 步驟5: 回調狀態 (跌破短期均線、守住長期均線)
             PullbackScreener(self.data_fetcher),
 
-            # 步驟5: 連續縮量 (成交量萎縮)
+            # 步驟6: 連續縮量 (成交量萎縮)
             VolumeShrinkScreener(self.data_fetcher),
 
-            # 步驟6: 均線支撐 (守住 MA20/MA60 且斜率向上)
+            # 步驟7: 均線支撐 (守住 MA20/MA60 且斜率向上)
             MASupportScreener(self.data_fetcher),
 
-            # 步驟7: RSI 超賣 (技術面確認超賣)
+            # 步驟8: RSI 超賣 (技術面確認超賣)
             RSIOversoldScreener(self.data_fetcher),
 
             # ========== 流動性篩選 ==========
-            # 步驟8: 換手率篩選 (確保流動性)
+            # 步驟9: 換手率篩選 (確保流動性)
             TurnoverRateScreener(self.data_fetcher),
 
             # ========== 籌碼面篩選 ==========
-            # 步驟9: 大戶持股 (籌碼集中)
+            # 步驟10: 大戶持股 (籌碼集中)
             MajorHolderScreener(self.data_fetcher),
 
-            # 步驟10: 法人吸籌 (連續買超、穩定建倉)
+            # 步驟11: 法人吸籌 (連續買超、穩定建倉)
             QuietAccumulationScreener(self.data_fetcher),
         ]
 

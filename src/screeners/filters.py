@@ -83,7 +83,7 @@ class TurnoverRateScreener(BaseScreener):
     def __init__(self, data_fetcher):
         min_rate = SCREENING_PARAMS.get("turnover_rate_min", 0.5)
         max_rate = SCREENING_PARAMS.get("turnover_rate_max", 20.0)
-        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=8)
+        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=9)
         self.min_rate = min_rate
         self.max_rate = max_rate
         self.data_fetcher = data_fetcher
@@ -324,10 +324,10 @@ class IntradayHighScreener(BaseScreener):
 
 
 class MASupportScreener(BaseScreener):
-    """步驟6: 均線支撐篩選 - 守住長期均線且斜率向上"""
+    """步驟7: 均線支撐篩選 - 守住長期均線且斜率向上"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="均線支撐", step_number=6)
+        super().__init__(name="均線支撐", step_number=7)
         self.data_fetcher = data_fetcher
         self.support_ma_periods = SCREENING_PARAMS.get("ma_support_periods", [20, 60])
         self.tolerance = SCREENING_PARAMS.get("ma_support_tolerance", 0.02)
@@ -738,11 +738,103 @@ class BelowForeignCostScreener(BaseScreener):
 # 回調縮量吸籌策略篩選器
 # ========================================
 
-class PullbackScreener(BaseScreener):
-    """步驟4: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
+class HigherLowsScreener(BaseScreener):
+    """步驟4: 底底高確認 - 確認上升趨勢仍在（低點持續墊高）"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="回調狀態", step_number=4)
+        super().__init__(name="底底高確認", step_number=4)
+        self.data_fetcher = data_fetcher
+        self.lookback_days = SCREENING_PARAMS.get("higher_lows_lookback_days", 60)
+        self.window = SCREENING_PARAMS.get("higher_lows_window", 5)
+        self.min_confirms = SCREENING_PARAMS.get("higher_lows_min_confirms", 2)
+        self.tolerance_pct = SCREENING_PARAMS.get("higher_lows_tolerance_pct", 1.0)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        lows_info = []
+        confirms_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+
+            hist_data = self.data_fetcher.get_historical_data(stock_id, days=self.lookback_days)
+            if hist_data.empty or len(hist_data) < self.window * 2 + 3:
+                valid_stocks.append(False)
+                lows_info.append("")
+                confirms_list.append(0)
+                continue
+
+            lows = hist_data["low"].values
+
+            # 找出波段低點 (local minimum)
+            local_lows = self._find_local_lows(lows)
+
+            if len(local_lows) < 2:
+                valid_stocks.append(False)
+                lows_info.append("低點不足")
+                confirms_list.append(0)
+                continue
+
+            # 計算底底高確認次數
+            higher_low_count = 0
+            for i in range(1, len(local_lows)):
+                prev_low = local_lows[i - 1][1]  # (index, price)
+                curr_low = local_lows[i][1]
+                # 當前低點 > 前一個低點 (允許容差)
+                if curr_low > prev_low * (1 - self.tolerance_pct / 100):
+                    higher_low_count += 1
+                else:
+                    # 出現更低的低點，重置計數
+                    higher_low_count = 0
+
+            is_valid = higher_low_count >= self.min_confirms
+
+            valid_stocks.append(is_valid)
+            confirms_list.append(higher_low_count)
+
+            if is_valid:
+                # 顯示最近幾個低點價位
+                recent_lows = [f"{price:.1f}" for _, price in local_lows[-3:]]
+                lows_info.append(f"底底高{higher_low_count}次 低點:{'>'.join(recent_lows)}")
+            else:
+                lows_info.append("")
+
+        df["higher_lows_valid"] = valid_stocks
+        df["higher_lows_info"] = lows_info
+        df["higher_lows_confirms"] = confirms_list
+
+        return df[df["higher_lows_valid"]].reset_index(drop=True)
+
+    def _find_local_lows(self, lows: np.ndarray) -> list:
+        """
+        找出波段低點 (local minimum)
+        使用前後各 window 根 K 棒比較，找出區間最低點
+        Returns: [(index, price), ...]
+        """
+        local_lows = []
+        w = self.window
+
+        for i in range(w, len(lows) - w):
+            # 檢查 lows[i] 是否為前後各 w 根中的最低
+            window_slice = lows[i - w: i + w + 1]
+            if lows[i] == window_slice.min():
+                # 避免連續相鄰的低點 (至少間隔 window 根)
+                if not local_lows or (i - local_lows[-1][0]) >= w:
+                    local_lows.append((i, lows[i]))
+
+        return local_lows
+
+
+class PullbackScreener(BaseScreener):
+    """步驟5: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="回調狀態", step_number=5)
         self.data_fetcher = data_fetcher
         self.min_pullback = SCREENING_PARAMS.get("pullback_min_pct", 5.0)
         self.max_pullback = SCREENING_PARAMS.get("pullback_max_pct", 20.0)
@@ -820,10 +912,10 @@ class PullbackScreener(BaseScreener):
 
 
 class VolumeShrinkScreener(BaseScreener):
-    """步驟5: 連續縮量篩選 - 成交量持續萎縮"""
+    """步驟6: 連續縮量篩選 - 成交量持續萎縮"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="連續縮量", step_number=5)
+        super().__init__(name="連續縮量", step_number=6)
         self.data_fetcher = data_fetcher
         self.shrink_days = SCREENING_PARAMS.get("volume_shrink_days", 3)
         self.shrink_threshold = SCREENING_PARAMS.get("volume_shrink_threshold", 0.7)
@@ -894,10 +986,10 @@ class VolumeShrinkScreener(BaseScreener):
 
 
 class QuietAccumulationScreener(BaseScreener):
-    """步驟10: 法人悄悄建倉篩選 - 回調中法人持續買超"""
+    """步驟11: 法人悄悄建倉篩選 - 回調中法人持續買超"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="法人吸籌", step_number=10)
+        super().__init__(name="法人吸籌", step_number=11)
         self.data_fetcher = data_fetcher
         self.min_days = SCREENING_PARAMS.get("accumulation_min_days", 3)
         self.max_stability = SCREENING_PARAMS.get("accumulation_max_stability", 2.0)
@@ -1224,7 +1316,7 @@ class RSIOversoldScreener(BaseScreener):
             name_parts.append("站MA5")
         name = " ".join(name_parts)
 
-        super().__init__(name=name, step_number=7)
+        super().__init__(name=name, step_number=8)
         self.data_fetcher = data_fetcher
         self.rsi_period = SCREENING_PARAMS.get("rsi_period", 14)
         self.rsi_oversold = rsi_threshold
@@ -1327,11 +1419,11 @@ class RSIOversoldScreener(BaseScreener):
 
 
 class MajorHolderScreener(BaseScreener):
-    """步驟9: 大戶持股篩選 - 千張大戶持股比例及變化"""
+    """步驟10: 大戶持股篩選 - 千張大戶持股比例及變化"""
 
     def __init__(self, data_fetcher):
         min_pct = SCREENING_PARAMS.get("major_holder_min_pct", 30)
-        super().__init__(name=f"大戶持股 >= {min_pct}%", step_number=9)
+        super().__init__(name=f"大戶持股 >= {min_pct}%", step_number=10)
         self.data_fetcher = data_fetcher
         self.min_pct = min_pct
         self.increase_weeks = SCREENING_PARAMS.get("major_holder_increase_weeks", 1)

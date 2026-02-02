@@ -1,6 +1,8 @@
 """
-回調縮量吸籌策略篩選流水線
-找出：回調縮量 + 守住支撐 + 法人悄悄建倉的股票
+台股選股策略篩選流水線
+支援兩種模式:
+  左側 (left)  = 回調縮量吸籌 → 還沒漲就先買
+  右側 (right) = 撒網抓強勢   → 已經在漲才追，留強砍弱
 """
 import pandas as pd
 from datetime import datetime
@@ -9,7 +11,9 @@ import logging
 
 from src.data.fetcher import DataFetcher
 from src.screeners.filters import (
+    # 共用
     MarketCapScreener,
+    # 左側策略
     TurnoverRateScreener,
     PullbackScreener,
     VolumeShrinkScreener,
@@ -20,6 +24,12 @@ from src.screeners.filters import (
     HigherLowsScreener,
     RSIOversoldScreener,
     MajorHolderScreener,
+    # 右側策略
+    PriceChangeScreener,
+    VolumeRatioScreener,
+    MovingAverageScreener,
+    RelativeStrengthScreener,
+    IntradayHighScreener,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,13 +134,20 @@ class MarketMonitor:
         print("=" * 60 + "\n")
 
 
+STRATEGY_NAMES = {
+    "left": "回調縮量吸籌策略 v4.0",
+    "right": "撒網抓強勢策略 v1.0",
+}
+
+
 class ScreeningPipeline:
     """
-    回調縮量吸籌策略篩選流水線
-    目標：找出回調縮量 + 守住支撐 + 法人悄悄建倉的股票
+    台股選股策略篩選流水線
+    支援左側 (回調吸籌) 和右側 (撒網抓強勢) 兩種模式
     """
 
-    def __init__(self):
+    def __init__(self, mode: str = "left"):
+        self.mode = mode
         self.data_fetcher = DataFetcher()
         self.market_monitor = MarketMonitor(self.data_fetcher)
         self.screeners = self._init_screeners()
@@ -138,10 +155,20 @@ class ScreeningPipeline:
         self.market_status = None
         self.step_results = {}
 
+    @property
+    def strategy_name(self) -> str:
+        return STRATEGY_NAMES.get(self.mode, STRATEGY_NAMES["left"])
+
     def _init_screeners(self) -> List:
+        """根據模式初始化對應的篩選器鏈"""
+        if self.mode == "right":
+            return self._init_right_screeners()
+        return self._init_left_screeners()
+
+    def _init_left_screeners(self) -> List:
         """
-        初始化篩選器 - 回調縮量吸籌策略 (增強版)
-        順序邏輯: 基本面 → 技術面 → 籌碼面
+        左側策略: 回調縮量吸籌 (11 步)
+        邏輯: 基本面OK → 趨勢向上 → 正在回調 → 量縮 → 支撐守住
         """
         screeners = [
             # ========== 快速排除 ==========
@@ -186,14 +213,47 @@ class ScreeningPipeline:
 
         return screeners
 
+    def _init_right_screeners(self) -> List:
+        """
+        右側策略: 撒網抓強勢 (6 步)
+        邏輯: 今天在噴 → 爆量確認 → 均線多頭 → 強於大盤 → 尾盤仍強
+        操作: 結果按漲幅排名，留強砍弱
+        """
+        screeners = [
+            # 步驟1: 市值篩選 (排除小型股)
+            MarketCapScreener(self.data_fetcher),
+
+            # 步驟2: 當日漲幅 >= 3% (已經在噴)
+            PriceChangeScreener(),
+
+            # 步驟3: 量比 > 1.5 (爆量確認，有人在買)
+            VolumeRatioScreener(self.data_fetcher),
+
+            # 步驟4: 均線多頭排列 (趨勢向上)
+            MovingAverageScreener(self.data_fetcher),
+
+            # 步驟5: 強於大盤 (個股漲幅 > 大盤漲幅)
+            RelativeStrengthScreener(self.data_fetcher),
+
+            # 步驟6: 尾盤創新高 (收盤前仍在高點，不是沖高回落)
+            IntradayHighScreener(),
+        ]
+
+        # 動態設定 step_number (1-6)
+        for i, screener in enumerate(screeners, 1):
+            screener.step_number = i
+
+        return screeners
+
     def run(self, check_market: bool = True) -> pd.DataFrame:
         """
         執行完整篩選流程
         Args:
             check_market: 是否檢查大盤均線狀態
         """
+        mode_label = "左側-回調吸籌" if self.mode == "left" else "右側-撒網抓強勢"
         logger.info("=" * 60)
-        logger.info(f"開始執行尾盤選股篩選 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"開始執行尾盤選股篩選 [{mode_label}] - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
 
         # 0. 檢查大盤均線狀態
@@ -237,7 +297,12 @@ class ScreeningPipeline:
                 "data": df.copy() if not df.empty else pd.DataFrame()
             }
 
-        # 3. 輸出結果摘要
+        # 3. 右側策略: 按漲幅排名 (方便留強砍弱)
+        if self.mode == "right" and not df.empty and "change_pct" in df.columns:
+            df = df.sort_values("change_pct", ascending=False).reset_index(drop=True)
+            df["rank"] = range(1, len(df) + 1)
+
+        # 4. 輸出結果摘要
         self._print_summary()
 
         return df

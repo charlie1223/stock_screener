@@ -1,6 +1,8 @@
 """
-台股回調縮量吸籌選股主程式
-策略：回調縮量 + 守住支撐 + 法人悄悄建倉
+台股選股主程式
+支援兩種策略模式:
+  左側 (left)  = 回調縮量吸籌 → 還沒漲就先買
+  右側 (right) = 撒網抓強勢   → 已經在漲才追，留強砍弱
 """
 import sys
 import logging
@@ -44,7 +46,7 @@ def is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
-def run_screener(force: bool = False, scan_pool: bool = False):
+def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left"):
     """執行選股程式"""
     # 檢查時間
     if not force:
@@ -62,7 +64,7 @@ def run_screener(force: bool = False, scan_pool: bool = False):
             return
 
     # 執行篩選
-    pipeline = ScreeningPipeline()
+    pipeline = ScreeningPipeline(mode=mode)
     results = pipeline.run()
 
     # 顯示逐步篩選結果
@@ -83,6 +85,19 @@ def run_screener(force: bool = False, scan_pool: bool = False):
 
     # 終端機顯示最終結果
     TerminalDisplay.display_results(results, institutional_data)
+
+    # 右側策略: 額外顯示漲幅排名
+    if mode == "right" and not results.empty and "rank" in results.columns:
+        print("\n" + "=" * 60)
+        print("  漲幅排名 (留強砍弱參考)")
+        print("=" * 60)
+        for _, row in results.iterrows():
+            name = row.get("stock_name", "")
+            sid = row.get("stock_id", "")
+            chg = row.get("change_pct", 0)
+            rank = row.get("rank", 0)
+            print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%")
+        print("=" * 60)
 
     # 輸出 CSV - 每一步的結果
     exporter = CSVExporter()
@@ -105,7 +120,7 @@ def run_screener(force: bool = False, scan_pool: bool = False):
         if step_results:
             notifier.send_step_summary(step_results)
         # 發送最終選股結果
-        notifier.send_screening_results(results, "回調縮量吸籌策略 v4.0")
+        notifier.send_screening_results(results, pipeline.strategy_name)
 
     # === 多頭股池追蹤 ===
     if scan_pool:
@@ -207,30 +222,25 @@ def run_institutional_scan(data_fetcher=None, stock_ids: list = None):
 def main():
     """主程式入口"""
     parser = argparse.ArgumentParser(
-        description="台股回調縮量吸籌選股程式",
+        description="台股選股程式 - 支援左側/右側兩種策略",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-策略說明:
-  回調縮量吸籌 = 找出「回調但不破支撐 + 成交量萎縮 + 法人悄悄建倉」的股票
+策略模式:
+  --mode left  (預設) 左側: 回調縮量吸籌 = 還沒漲就先買
+    1. 市值篩選  2. 營收成長  3. 本益比  4. 底底高確認
+    5. 回調狀態  6. 連續縮量  7. 均線支撐  8. RSI超賣回升
+    9. 換手率  10. 大戶持股  11. 法人吸籌
 
-篩選流程:
-  1. 市值 >= 50億 (排除小型股)
-  2. 營收成長 (基本面健康)
-  3. 本益比篩選 (價值合理)
-  4. 底底高確認 (上升趨勢仍在，低點持續墊高)
-  5. 回調狀態 (跌破短期均線、守住長期均線、從高點回落5-20%)
-  6. 連續縮量 (成交量萎縮)
-  7. 均線支撐 (守住 MA20/MA60 且斜率向上)
-  8. RSI 超賣回升 (技術面確認觸底)
-  9. 換手率篩選 (確保流動性)
-  10. 大戶持股 (籌碼集中)
-  11. 法人吸籌 (連續買超、穩定建倉)
+  --mode right 右側: 撒網抓強勢 = 已經在漲才追，留強砍弱
+    1. 市值篩選  2. 漲幅>=3%  3. 量比>1.5
+    4. 均線多頭  5. 強於大盤  6. 尾盤創新高
+    結果按漲幅排名，方便決定留誰砍誰
 
 範例:
-  python -m src.main              # 正常執行
-  python -m src.main --force      # 強制執行 (忽略時間檢查)
-  python -m src.main -f --inst    # 執行篩選 + 法人佈局追蹤
-  python -m src.main --inst-only  # 只執行法人佈局追蹤
+  python -m src.main -f              # 左側策略 (預設)
+  python -m src.main -f --mode right # 右側策略
+  python -m src.main -f --inst       # 左側 + 法人佈局追蹤
+  python -m src.main --inst-only     # 只執行法人佈局追蹤
         """
     )
     parser.add_argument(
@@ -242,6 +252,12 @@ def main():
         "-v", "--verbose",
         action="store_true",
         help="顯示詳細日誌"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["left", "right"],
+        default="left",
+        help="策略模式: left=回調吸籌(預設), right=撒網抓強勢"
     )
     parser.add_argument(
         "--pool",
@@ -274,9 +290,15 @@ def main():
     # 設置日誌
     setup_logging(verbose=args.verbose)
 
+    # 顯示標題
+    from src.pipeline import STRATEGY_NAMES
+    mode_name = STRATEGY_NAMES.get(args.mode, STRATEGY_NAMES["left"])
     print("\n" + "=" * 60)
-    print("  台股回調縮量吸籌選股程式 v4.0 (增強版)")
-    print("  基本面 + 技術面 + 籌碼面 多維度篩選")
+    print(f"  台股選股程式 - {mode_name}")
+    if args.mode == "left":
+        print("  基本面 + 技術面 + 籌碼面 多維度篩選")
+    else:
+        print("  爆量突破 + 均線多頭 + 強於大盤 → 留強砍弱")
     print("=" * 60 + "\n")
 
     # 執行
@@ -293,7 +315,7 @@ def main():
             scan_inst = args.inst or args.all
 
             # 執行今日訊號篩選
-            run_screener(force=args.force, scan_pool=scan_pool)
+            run_screener(force=args.force, scan_pool=scan_pool, mode=args.mode)
 
             # 執行法人佈局追蹤
             if scan_inst:

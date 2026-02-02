@@ -98,4 +98,16 @@ SCREENING_PARAMS = {
     # ========================================
     "accumulation_min_days": 3,           # 法人連續買超最少天數
     "accumulation_max_stability": 2.0,    # 最大穩定度 (越小越穩定)
+
+    # ========================================
+    # 右側策略: 撒網抓強勢 (追漲模式)
+    # 用法: python -m src.main --force --mode right
+    # ========================================
+    "price_change_min": 3.0,              # 當日最低漲幅 % (確認已在漲)
+    "price_change_max": 10.0,             # 當日最高漲幅 % (排除漲停鎖死)
+    "volume_ratio_min": 1.5,              # 量比門檻 (爆量確認)
+    "short_ma_periods": [5, 10],          # 短期均線 (多頭排列用)
+    "long_ma_period": 60,                 # 長期均線 (多頭排列用)
+    "volume_increase_days": 3,            # 成交量持續放大天數
+    "intraday_high_threshold": 0.97,      # 現價接近日高的比例 (97%)
 }

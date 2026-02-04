@@ -283,8 +283,14 @@ class CSVExporter:
         if deleted_count > 0:
             logger.info(f"已清理 {deleted_count} 個超過 {DATA_RETENTION_DAYS} 天的資料夾")
 
-    def export(self, df: pd.DataFrame, filename: str = None) -> str:
-        """將篩選結果輸出為 CSV (存放在日期資料夾)"""
+    def export(self, df: pd.DataFrame, filename: str = None, mode: str = "left") -> str:
+        """
+        將篩選結果輸出為 CSV (存放在日期資料夾)
+        Args:
+            df: 篩選結果 DataFrame
+            filename: 自訂檔名 (可選)
+            mode: 策略模式 ("left" 或 "right")
+        """
         if df.empty:
             logger.warning("無資料可輸出")
             return None
@@ -293,15 +299,28 @@ class CSVExporter:
 
         if filename is None:
             timestamp = datetime.now().strftime("%H%M%S")
-            filename = f"screener_result_{timestamp}.csv"
+            mode_label = "left" if mode == "left" else "right"
+            filename = f"screener_{mode_label}_{timestamp}.csv"
 
         filepath = date_dir / filename
 
-        # 選擇要輸出的欄位
+        # 選擇要輸出的欄位 (加入量價狀態欄位)
         output_columns = [
             "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
             "open", "high", "low", "prev_close", "market",
+            # 量價健康度欄位
+            "vp_status", "vp_info", "vp_volume_ratio",
+            # 回調狀態欄位
+            "pullback_info", "pullback_pct", "support_distance",
+            # RSI 欄位
+            "rsi", "rsi_info",
+            # 籌碼面欄位
+            "holder_info", "major_holder_pct", "accumulation_info",
+            # 底底高欄位
+            "higher_lows_info", "higher_lows_confirms",
+            # 右側策略欄位
+            "rank", "relative_strength", "intraday_strong",
             # 三大法人欄位
             "foreign_today", "foreign_sum", "trust_today", "trust_sum",
             "dealer_today", "dealer_sum", "total_today", "total_sum"
@@ -315,11 +334,12 @@ class CSVExporter:
         logger.info(f"結果已儲存至: {filepath}")
         return str(filepath)
 
-    def export_step_results(self, step_results: dict) -> str:
+    def export_step_results(self, step_results: dict, mode: str = "left") -> str:
         """
         將每一步篩選結果輸出為 CSV (存放在日期資料夾下的 steps 子資料夾)
         Args:
             step_results: 每一步篩選的結果字典 {step_number: {"name": str, "data": DataFrame}}
+            mode: 策略模式 ("left" 或 "right")
         Returns:
             輸出的資料夾路徑
         """
@@ -330,15 +350,26 @@ class CSVExporter:
         date_dir = self._get_date_dir()
         timestamp = datetime.now().strftime("%H%M%S")
 
-        # 建立 steps 子資料夾
-        step_dir = date_dir / f"steps_{timestamp}"
+        # 建立 steps 子資料夾，加入策略模式標記
+        mode_label = "left" if mode == "left" else "right"
+        step_dir = date_dir / f"steps_{mode_label}_{timestamp}"
         step_dir.mkdir(parents=True, exist_ok=True)
 
-        # 選擇要輸出的欄位
+        # 選擇要輸出的欄位 (加入量價狀態欄位)
         output_columns = [
             "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
-            "open", "high", "low", "prev_close", "market"
+            "open", "high", "low", "prev_close", "market",
+            # 量價健康度欄位
+            "vp_status", "vp_info", "vp_volume_ratio",
+            # 回調狀態欄位
+            "pullback_info", "pullback_pct", "support_distance",
+            # RSI 欄位
+            "rsi", "rsi_info",
+            # 籌碼面欄位
+            "holder_info", "major_holder_pct", "accumulation_info",
+            # 底底高欄位
+            "higher_lows_info", "higher_lows_confirms",
         ]
 
         exported_files = []
@@ -352,7 +383,7 @@ class CSVExporter:
                 continue
 
             # 檔名格式: step_01_漲幅3%-5%.csv
-            safe_name = step_name.replace("/", "-").replace(" ", "_")
+            safe_name = step_name.replace("/", "-").replace(" ", "_").replace("<", "").replace(">", "")
             filename = f"step_{step_num:02d}_{safe_name}.csv"
             filepath = step_dir / filename
 

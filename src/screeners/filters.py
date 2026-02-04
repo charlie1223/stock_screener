@@ -78,12 +78,12 @@ class VolumeRatioScreener(BaseScreener):
 
 
 class TurnoverRateScreener(BaseScreener):
-    """步驟8: 換手率篩選"""
+    """步驟9: 換手率篩選"""
 
     def __init__(self, data_fetcher):
         min_rate = SCREENING_PARAMS.get("turnover_rate_min", 0.5)
         max_rate = SCREENING_PARAMS.get("turnover_rate_max", 20.0)
-        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=9)
+        super().__init__(name=f"換手率 {min_rate}%-{max_rate}%", step_number=9)  # 步驟9 維持不變
         self.min_rate = min_rate
         self.max_rate = max_rate
         self.data_fetcher = data_fetcher
@@ -735,6 +735,142 @@ class BelowForeignCostScreener(BaseScreener):
 
 
 # ========================================
+# 量價健康度篩選器
+# ========================================
+
+class VolumePriceHealthScreener(BaseScreener):
+    """
+    量價健康度篩選 - 分析量價關係，排除竭盡量股票
+
+    量價狀態分類：
+    1. 健康量 (healthy): 創新高 + 小量/持平量，回調時縮量 → 趨勢延續訊號
+    2. 換手量 (turnover): 創新高 + 2-4倍量，看收盤位置 → 中性
+    3. 竭盡量 (exhaustion): 暴漲 + 區間最大量 → 可能見頂訊號，排除
+
+    此篩選器會：
+    - 計算並標記每檔股票的量價狀態
+    - 排除「竭盡量」股票
+    - 保留「健康量」和「換手量」股票
+    """
+
+    def __init__(self, data_fetcher):
+        super().__init__(name="量價健康度", step_number=6)
+        self.data_fetcher = data_fetcher
+        # 換手量判定: 量是均量的 2-4 倍
+        self.turnover_volume_min = SCREENING_PARAMS.get("turnover_volume_ratio_min", 2.0)
+        self.turnover_volume_max = SCREENING_PARAMS.get("turnover_volume_ratio_max", 4.0)
+        # 竭盡量判定: 量是區間最大量，且漲幅明顯
+        self.exhaustion_lookback_days = SCREENING_PARAMS.get("exhaustion_lookback_days", 20)
+        self.exhaustion_price_change_min = SCREENING_PARAMS.get("exhaustion_price_change_min", 5.0)
+        # 健康量判定: 量不超過均量的 1.5 倍
+        self.healthy_volume_max = SCREENING_PARAMS.get("healthy_volume_ratio_max", 1.5)
+        self.volume_avg_days = SCREENING_PARAMS.get("volume_avg_days", 20)
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        valid_stocks = []
+        vp_status_list = []  # 量價狀態
+        vp_info_list = []    # 詳細說明
+        volume_ratio_list = []
+
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            current_price = row["price"]
+            current_volume = row["volume"]
+            change_pct = row.get("change_pct", 0)
+            high_price = row.get("high", current_price)
+
+            hist_data = self.data_fetcher.get_historical_data(
+                stock_id, days=self.exhaustion_lookback_days + 5
+            )
+            if hist_data.empty or len(hist_data) < self.volume_avg_days:
+                # 資料不足，保留並標記
+                valid_stocks.append(True)
+                vp_status_list.append("unknown")
+                vp_info_list.append("資料不足")
+                volume_ratio_list.append(np.nan)
+                continue
+
+            volumes = hist_data["volume"] / 1000  # 股 -> 張
+            closes = hist_data["close"]
+            highs = hist_data["high"]
+
+            # 計算均量
+            avg_volume = volumes.tail(self.volume_avg_days).mean()
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+
+            # 取區間最大量
+            max_volume_in_period = volumes.tail(self.exhaustion_lookback_days).max()
+
+            # 判斷是否創新高 (20日內)
+            recent_high = highs.tail(self.exhaustion_lookback_days).max()
+            is_new_high = high_price >= recent_high * 0.98  # 接近新高
+
+            # ==========================================
+            # 量價狀態判定邏輯
+            # ==========================================
+
+            vp_status = "healthy"  # 預設健康量
+            vp_info = ""
+
+            # 1. 竭盡量判定: 當日量是區間最大量 + 漲幅明顯
+            is_exhaustion = (
+                current_volume >= max_volume_in_period * 0.95 and  # 接近或超過區間最大量
+                change_pct >= self.exhaustion_price_change_min and  # 漲幅 >= 5%
+                volume_ratio >= self.turnover_volume_max  # 量比 >= 4 倍
+            )
+
+            # 2. 換手量判定: 創新高 + 量是均量的 2-4 倍
+            is_turnover = (
+                is_new_high and
+                self.turnover_volume_min <= volume_ratio < self.turnover_volume_max
+            )
+
+            # 3. 健康量判定: 量不超過均量的 1.5 倍，或回調時縮量
+            is_healthy = volume_ratio <= self.healthy_volume_max
+
+            # 狀態分類
+            if is_exhaustion:
+                vp_status = "exhaustion"
+                vp_info = f"⚠️ 竭盡量 量比{volume_ratio:.1f}x 漲{change_pct:.1f}%"
+            elif is_turnover:
+                vp_status = "turnover"
+                # 換手量看收盤位置
+                close_position = (current_price - row.get("low", current_price)) / \
+                                 (high_price - row.get("low", current_price) + 0.01)
+                if close_position >= 0.7:
+                    vp_info = f"換手量 量比{volume_ratio:.1f}x 收高檔{close_position:.0%}"
+                else:
+                    vp_info = f"換手量 量比{volume_ratio:.1f}x 收中低檔{close_position:.0%}"
+            elif is_healthy:
+                vp_status = "healthy"
+                vp_info = f"✓ 健康量 量比{volume_ratio:.1f}x"
+            else:
+                # 量偏大但不到竭盡量
+                vp_status = "moderate"
+                vp_info = f"量偏大 量比{volume_ratio:.1f}x"
+
+            # 排除竭盡量
+            is_valid = vp_status != "exhaustion"
+
+            valid_stocks.append(is_valid)
+            vp_status_list.append(vp_status)
+            vp_info_list.append(vp_info)
+            volume_ratio_list.append(volume_ratio)
+
+        df["vp_valid"] = valid_stocks
+        df["vp_status"] = vp_status_list
+        df["vp_info"] = vp_info_list
+        df["vp_volume_ratio"] = volume_ratio_list
+
+        return df[df["vp_valid"]].reset_index(drop=True)
+
+
+# ========================================
 # 回調縮量吸籌策略篩選器
 # ========================================
 
@@ -831,7 +967,7 @@ class HigherLowsScreener(BaseScreener):
 
 
 class PullbackScreener(BaseScreener):
-    """步驟5: 回調狀態篩選 - 跌破短期均線但守住長期均線"""
+    """步驟5: 回調狀態篩選 - 跌破短期均線但守住長期均線 + 均線斜率向上"""
 
     def __init__(self, data_fetcher):
         super().__init__(name="回調狀態", step_number=5)
@@ -841,6 +977,8 @@ class PullbackScreener(BaseScreener):
         self.high_lookback = SCREENING_PARAMS.get("pullback_high_lookback_days", 20)
         self.short_ma = SCREENING_PARAMS.get("pullback_short_ma", [5, 10])
         self.long_ma = SCREENING_PARAMS.get("pullback_long_ma", [20, 60])
+        self.tolerance = SCREENING_PARAMS.get("ma_support_tolerance", 0.03)
+        self.slope_lookback = SCREENING_PARAMS.get("ma_slope_lookback_days", 5)
 
     def screen(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -851,26 +989,36 @@ class PullbackScreener(BaseScreener):
         valid_stocks = []
         pullback_info = []
         pullback_pct_list = []
+        support_distance_list = []
 
         for idx, row in df.iterrows():
             stock_id = row["stock_id"]
             current_price = row["price"]
+            low_price = row["low"]
 
             hist_data = self.data_fetcher.get_historical_data(stock_id, days=70)
             if hist_data.empty or len(hist_data) < 60:
                 valid_stocks.append(False)
                 pullback_info.append("")
                 pullback_pct_list.append(np.nan)
+                support_distance_list.append(np.nan)
                 continue
 
             closes = hist_data["close"]
             highs = hist_data["high"]
 
-            # 計算均線
+            # 計算均線及斜率
             ma_values = {}
+            ma_slopes = {}
             for period in self.short_ma + self.long_ma:
                 if len(closes) >= period:
-                    ma_values[period] = closes.rolling(period).mean().iloc[-1]
+                    ma_series = closes.rolling(period).mean()
+                    ma_values[period] = ma_series.iloc[-1]
+                    # 計算斜率 (最近值 vs N日前)
+                    if len(ma_series) >= self.slope_lookback:
+                        ma_slopes[period] = ma_series.iloc[-1] > ma_series.iloc[-self.slope_lookback]
+                    else:
+                        ma_slopes[period] = False
 
             # 條件1: 跌破短期均線 (MA5 或 MA10)
             below_short = False
@@ -879,14 +1027,21 @@ class PullbackScreener(BaseScreener):
                     below_short = True
                     break
 
-            # 條件2: 守住長期均線 (MA20 或 MA60)
+            # 條件2: 守住長期均線 (MA20 或 MA60) + 斜率向上 (原 MASupportScreener 邏輯)
             above_long = False
             support_ma = None
+            support_distance = np.nan
             for period in self.long_ma:
-                if period in ma_values and current_price > ma_values[period]:
-                    above_long = True
-                    support_ma = f"MA{period}"
-                    break
+                if period in ma_values:
+                    ma_val = ma_values[period]
+                    slope_up = ma_slopes.get(period, False)
+                    # 允許跌破支撐一點點 (tolerance)
+                    above_support = low_price >= ma_val * (1 - self.tolerance)
+                    if above_support and slope_up:
+                        above_long = True
+                        support_ma = f"MA{period}"
+                        support_distance = ((current_price - ma_val) / ma_val) * 100
+                        break
 
             # 條件3: 從近期高點回落適當幅度
             recent_high = highs.tail(self.high_lookback).max()
@@ -898,24 +1053,26 @@ class PullbackScreener(BaseScreener):
 
             valid_stocks.append(is_valid)
             pullback_pct_list.append(pullback_pct)
+            support_distance_list.append(support_distance)
 
             if is_valid:
-                pullback_info.append(f"回調{pullback_pct:.1f}% 守住{support_ma}")
+                pullback_info.append(f"回調{pullback_pct:.1f}% 守住{support_ma} 距離{support_distance:.1f}%")
             else:
                 pullback_info.append("")
 
         df["pullback_valid"] = valid_stocks
         df["pullback_info"] = pullback_info
         df["pullback_pct"] = pullback_pct_list
+        df["support_distance"] = support_distance_list
 
         return df[df["pullback_valid"]].reset_index(drop=True)
 
 
 class VolumeShrinkScreener(BaseScreener):
-    """步驟6: 連續縮量篩選 - 成交量持續萎縮"""
+    """步驟7: 連續縮量篩選 - 成交量持續萎縮"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="連續縮量", step_number=6)
+        super().__init__(name="連續縮量", step_number=7)
         self.data_fetcher = data_fetcher
         self.shrink_days = SCREENING_PARAMS.get("volume_shrink_days", 3)
         self.shrink_threshold = SCREENING_PARAMS.get("volume_shrink_threshold", 0.7)
@@ -989,7 +1146,7 @@ class QuietAccumulationScreener(BaseScreener):
     """步驟11: 法人悄悄建倉篩選 - 回調中法人持續買超"""
 
     def __init__(self, data_fetcher):
-        super().__init__(name="法人吸籌", step_number=11)
+        super().__init__(name="法人吸籌", step_number=11)  # 步驟11 維持不變
         self.data_fetcher = data_fetcher
         self.min_days = SCREENING_PARAMS.get("accumulation_min_days", 3)
         self.max_stability = SCREENING_PARAMS.get("accumulation_max_stability", 2.0)
@@ -1301,7 +1458,7 @@ class PERatioScreener(BaseScreener):
 
 
 class RSIOversoldScreener(BaseScreener):
-    """步驟7: RSI 超賣篩選 - 技術面確認超賣且觸底回升 + 站回MA5"""
+    """步驟8: RSI 超賣篩選 - 技術面確認超賣且觸底回升 + 站回MA5"""
 
     def __init__(self, data_fetcher):
         rsi_threshold = SCREENING_PARAMS.get("rsi_oversold", 35)
@@ -1316,7 +1473,7 @@ class RSIOversoldScreener(BaseScreener):
             name_parts.append("站MA5")
         name = " ".join(name_parts)
 
-        super().__init__(name=name, step_number=8)
+        super().__init__(name=name, step_number=8)  # 步驟8 維持不變
         self.data_fetcher = data_fetcher
         self.rsi_period = SCREENING_PARAMS.get("rsi_period", 14)
         self.rsi_oversold = rsi_threshold
@@ -1423,7 +1580,7 @@ class MajorHolderScreener(BaseScreener):
 
     def __init__(self, data_fetcher):
         min_pct = SCREENING_PARAMS.get("major_holder_min_pct", 30)
-        super().__init__(name=f"大戶持股 >= {min_pct}%", step_number=10)
+        super().__init__(name=f"大戶持股 >= {min_pct}%", step_number=10)  # 步驟10 維持不變
         self.data_fetcher = data_fetcher
         self.min_pct = min_pct
         self.increase_weeks = SCREENING_PARAMS.get("major_holder_increase_weeks", 1)

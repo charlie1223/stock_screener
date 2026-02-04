@@ -16,8 +16,8 @@ from src.screeners.filters import (
     # 左側策略
     TurnoverRateScreener,
     PullbackScreener,
+    VolumePriceHealthScreener,
     VolumeShrinkScreener,
-    MASupportScreener,
     QuietAccumulationScreener,
     RevenueGrowthScreener,
     PERatioScreener,
@@ -167,8 +167,8 @@ class ScreeningPipeline:
 
     def _init_left_screeners(self) -> List:
         """
-        左側策略: 回調縮量吸籌 (11 步)
-        邏輯: 基本面OK → 趨勢向上 → 正在回調 → 量縮 → 支撐守住
+        左側策略: 回調縮量吸籌 (10 步)
+        邏輯: 基本面OK → 趨勢向上 → 正在回調 → 量價健康 → 量縮 → 籌碼面
         """
         screeners = [
             # ========== 快速排除 ==========
@@ -187,14 +187,14 @@ class ScreeningPipeline:
             HigherLowsScreener(self.data_fetcher),
 
             # ========== 技術面篩選 ==========
-            # 步驟5: 回調狀態 (跌破短期均線、守住長期均線)
+            # 步驟5: 回調狀態 (跌破短期均線、守住長期均線+斜率向上)
             PullbackScreener(self.data_fetcher),
 
-            # 步驟6: 連續縮量 (成交量萎縮)
-            VolumeShrinkScreener(self.data_fetcher),
+            # 步驟6: 量價健康度 (排除竭盡量，保留健康量/換手量)
+            VolumePriceHealthScreener(self.data_fetcher),
 
-            # 步驟7: 均線支撐 (守住 MA20/MA60 且斜率向上)
-            MASupportScreener(self.data_fetcher),
+            # 步驟7: 連續縮量 (成交量萎縮)
+            VolumeShrinkScreener(self.data_fetcher),
 
             # 步驟8: RSI 超賣 (技術面確認超賣)
             RSIOversoldScreener(self.data_fetcher),

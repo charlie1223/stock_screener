@@ -99,16 +99,16 @@ def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left
             print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%")
         print("=" * 60)
 
-    # 輸出 CSV - 每一步的結果
+    # 輸出 CSV - 每一步的結果 (加入策略模式標記)
     exporter = CSVExporter()
     if step_results:
-        step_dir = exporter.export_step_results(step_results)
+        step_dir = exporter.export_step_results(step_results, mode=mode)
         if step_dir:
             print(f"\n逐步篩選結果已儲存至: {step_dir}")
 
-    # 輸出最終結果 CSV
+    # 輸出最終結果 CSV (加入策略模式標記)
     if not results.empty:
-        filepath = exporter.export(results)
+        filepath = exporter.export(results, mode=mode)
         if filepath:
             print(f"最終結果已儲存至: {filepath}")
 
@@ -228,8 +228,9 @@ def main():
 策略模式:
   --mode left  (預設) 左側: 回調縮量吸籌 = 還沒漲就先買
     1. 市值篩選  2. 營收成長  3. 本益比  4. 底底高確認
-    5. 回調狀態  6. 連續縮量  7. 均線支撐  8. RSI超賣回升
+    5. 回調狀態  6. 量價健康  7. 連續縮量  8. RSI超賣回升
     9. 換手率  10. 大戶持股  11. 法人吸籌
+    (量價健康度: 排除竭盡量，保留健康量/換手量)
 
   --mode right 右側: 撒網抓強勢 = 已經在漲才追，留強砍弱
     1. 市值篩選  2. 漲幅>=3%  3. 量比>1.5

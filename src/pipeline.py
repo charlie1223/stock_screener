@@ -10,6 +10,7 @@ from typing import List, Dict
 import logging
 
 from src.data.fetcher import DataFetcher
+from src.foreign_sentiment import ForeignSentimentAnalyzer
 from src.screeners.filters import (
     # 共用
     MarketCapScreener,
@@ -150,9 +151,11 @@ class ScreeningPipeline:
         self.mode = mode
         self.data_fetcher = DataFetcher()
         self.market_monitor = MarketMonitor(self.data_fetcher)
+        self.foreign_sentiment = ForeignSentimentAnalyzer()
         self.screeners = self._init_screeners()
         self.stats = []
         self.market_status = None
+        self.foreign_sentiment_result = None
         self.step_results = {}
 
     @property
@@ -256,7 +259,11 @@ class ScreeningPipeline:
         logger.info(f"開始執行尾盤選股篩選 [{mode_label}] - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
 
-        # 0. 檢查大盤均線狀態
+        # 0. 外資動向分析 (現貨+期貨交叉判讀)
+        self.foreign_sentiment_result = self.foreign_sentiment.analyze()
+        self._print_foreign_sentiment()
+
+        # 0.5 檢查大盤均線狀態
         if check_market:
             self.market_status = self.market_monitor.check_market_status()
             self.market_monitor.print_market_status(self.market_status)
@@ -332,6 +339,39 @@ class ScreeningPipeline:
             logger.info("-" * 60)
             logger.info(f"最終篩選結果: {final_count} 檔 (總通過率: {overall_rate})")
 
+    def _print_foreign_sentiment(self):
+        """輸出外資動向分析"""
+        r = self.foreign_sentiment_result
+        if not r:
+            return
+
+        print("\n" + "=" * 60)
+        print("  外資動向分析 (現貨+期貨交叉判讀)")
+        print("=" * 60)
+        print(f"  日期: {r['date']}")
+        print(f"  現貨: {r['spot_direction']} {abs(r['spot_net']):.1f} 億")
+        print(f"  期貨: {r['futures_direction']} {abs(r['futures_oi_change']):,} 口")
+        print(f"  ─────────────────────────────")
+        print(f"  判讀: {r['icon']} {r['sentiment']}")
+        print(f"  說明: {r['detail']}")
+
+        # 操作建議
+        sentiment = r["sentiment"]
+        if sentiment == "絕對看多":
+            print(f"  建議: 積極操作，選股結果可信度高")
+        elif sentiment == "策略對沖":
+            print(f"  建議: 正常操作，外資有避險但仍在買現貨")
+        elif sentiment == "絕對看空":
+            print(f"  建議: 保守操作，考慮減碼或觀望")
+        elif sentiment == "底部佈局":
+            print(f"  建議: 留意反轉訊號，外資可能在佈局底部")
+
+        print("=" * 60 + "\n")
+
     def get_market_status(self) -> Dict:
         """取得大盤狀態"""
         return self.market_status or {}
+
+    def get_foreign_sentiment(self) -> Dict:
+        """取得外資動向分析結果"""
+        return self.foreign_sentiment_result or {}

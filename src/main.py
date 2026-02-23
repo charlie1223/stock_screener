@@ -99,16 +99,24 @@ def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left
             print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%")
         print("=" * 60)
 
-    # 輸出 CSV - 每一步的結果 (加入策略模式標記)
+    # 輸出 CSV
     exporter = CSVExporter()
+
+    # 輸出外資動向分析
+    foreign_sentiment = pipeline.get_foreign_sentiment()
+    if foreign_sentiment:
+        exporter.export_foreign_sentiment(foreign_sentiment)
+
+    # 每一步的結果 (加入策略模式標記)
     if step_results:
         step_dir = exporter.export_step_results(step_results, mode=mode)
         if step_dir:
             print(f"\n逐步篩選結果已儲存至: {step_dir}")
 
-    # 輸出最終結果 CSV (加入策略模式標記)
+    # 輸出最終結果 CSV (加入策略模式標記 + 外資動向)
     if not results.empty:
-        filepath = exporter.export(results, mode=mode)
+        foreign_sentiment = pipeline.get_foreign_sentiment()
+        filepath = exporter.export(results, mode=mode, foreign_sentiment=foreign_sentiment)
         if filepath:
             print(f"最終結果已儲存至: {filepath}")
 

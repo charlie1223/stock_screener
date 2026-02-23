@@ -283,13 +283,15 @@ class CSVExporter:
         if deleted_count > 0:
             logger.info(f"已清理 {deleted_count} 個超過 {DATA_RETENTION_DAYS} 天的資料夾")
 
-    def export(self, df: pd.DataFrame, filename: str = None, mode: str = "left") -> str:
+    def export(self, df: pd.DataFrame, filename: str = None, mode: str = "left",
+               foreign_sentiment: dict = None) -> str:
         """
         將篩選結果輸出為 CSV (存放在日期資料夾)
         Args:
             df: 篩選結果 DataFrame
             filename: 自訂檔名 (可選)
             mode: 策略模式 ("left" 或 "right")
+            foreign_sentiment: 外資動向分析結果 (可選)
         """
         if df.empty:
             logger.warning("無資料可輸出")
@@ -304,11 +306,20 @@ class CSVExporter:
 
         filepath = date_dir / filename
 
-        # 選擇要輸出的欄位 (加入量價狀態欄位)
+        # 加入外資動向欄位到每一行
+        output_df = df.copy()
+        if foreign_sentiment:
+            output_df["foreign_sentiment"] = foreign_sentiment.get("sentiment", "")
+            output_df["foreign_spot_net"] = foreign_sentiment.get("spot_net", 0)
+            output_df["foreign_futures_oi"] = foreign_sentiment.get("futures_oi_change", 0)
+
+        # 選擇要輸出的欄位
         output_columns = [
             "stock_id", "stock_name", "industry", "price", "change_pct",
             "volume", "volume_ratio", "turnover_rate", "market_cap",
             "open", "high", "low", "prev_close", "market",
+            # 外資動向欄位
+            "foreign_sentiment", "foreign_spot_net", "foreign_futures_oi",
             # 量價健康度欄位
             "vp_status", "vp_info", "vp_volume_ratio",
             # 回調狀態欄位
@@ -325,13 +336,35 @@ class CSVExporter:
             "foreign_today", "foreign_sum", "trust_today", "trust_sum",
             "dealer_today", "dealer_sum", "total_today", "total_sum"
         ]
-        available_cols = [c for c in output_columns if c in df.columns]
-        output_df = df[available_cols].copy()
+        available_cols = [c for c in output_columns if c in output_df.columns]
+        output_df = output_df[available_cols]
 
         # 輸出 CSV (UTF-8-BOM 確保 Excel 正確顯示中文)
         output_df.to_csv(filepath, index=False, encoding="utf-8-sig")
 
         logger.info(f"結果已儲存至: {filepath}")
+        return str(filepath)
+
+    def export_foreign_sentiment(self, sentiment: dict) -> str:
+        """輸出外資動向分析結果到 CSV"""
+        if not sentiment:
+            return None
+
+        date_dir = self._get_date_dir()
+        filepath = date_dir / "foreign_sentiment.csv"
+
+        rows = [{
+            "date": sentiment.get("date", ""),
+            "sentiment": sentiment.get("sentiment", ""),
+            "spot_direction": sentiment.get("spot_direction", ""),
+            "spot_net_billion": sentiment.get("spot_net", 0),
+            "futures_direction": sentiment.get("futures_direction", ""),
+            "futures_oi_change": sentiment.get("futures_oi_change", 0),
+            "detail": sentiment.get("detail", ""),
+        }]
+
+        pd.DataFrame(rows).to_csv(filepath, index=False, encoding="utf-8-sig")
+        logger.info(f"外資動向已儲存至: {filepath}")
         return str(filepath)
 
     def export_step_results(self, step_results: dict, mode: str = "left") -> str:

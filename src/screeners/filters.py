@@ -1709,3 +1709,98 @@ class MajorHolderScreener(BaseScreener):
 
         except Exception as e:
             return {}
+
+
+# ========================================
+# 右側策略 v2 新增: 量能正常 + 法人沒在出貨
+# ========================================
+
+class VolumeVsYesterdayScreener(BaseScreener):
+    """
+    量能正常篩選 - 今日量 / 昨日量 在合理區間
+    - 量比 < min: 沒爆量，趨勢不夠強
+    - 量比 > max: 異常爆量，可能是主力出貨日 (竭盡量)
+    """
+
+    def __init__(self, data_fetcher):
+        ratio_min = SCREENING_PARAMS.get("vol_vs_yesterday_min", 1.2)
+        ratio_max = SCREENING_PARAMS.get("vol_vs_yesterday_max", 3.0)
+        super().__init__(name=f"量能正常 ({ratio_min}-{ratio_max}x 昨量)", step_number=5)
+        self.data_fetcher = data_fetcher
+        self.ratio_min = ratio_min
+        self.ratio_max = ratio_max
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        ratios = []
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            today_volume = row["volume"]
+
+            hist = self.data_fetcher.get_historical_data(stock_id, days=3)
+            if hist.empty or len(hist) < 1:
+                ratios.append(np.nan)
+                continue
+
+            # 昨日量 (股 -> 張)
+            yesterday_volume = hist.iloc[-1]["volume"] / 1000
+            if yesterday_volume <= 0:
+                ratios.append(np.nan)
+                continue
+
+            ratios.append(today_volume / yesterday_volume)
+
+        df["vol_vs_yesterday"] = ratios
+        mask = (
+            df["vol_vs_yesterday"].notna() &
+            (df["vol_vs_yesterday"] >= self.ratio_min) &
+            (df["vol_vs_yesterday"] <= self.ratio_max)
+        )
+        return df[mask].reset_index(drop=True)
+
+
+class InstitutionalNotSellingScreener(BaseScreener):
+    """
+    法人沒在出貨篩選 - 排除「大漲 + 法人賣超」(疑似散戶在接、主力倒貨)
+    判斷邏輯: 三大法人合計買賣超 >= 門檻 (預設 0，即沒賣超)
+    """
+
+    def __init__(self, data_fetcher):
+        min_net = SCREENING_PARAMS.get("inst_min_today_net", 0)
+        super().__init__(name=f"法人未賣超 (>= {min_net} 張)", step_number=6)
+        self.data_fetcher = data_fetcher
+        self.min_net = min_net
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        net_today = []
+        info = []
+        for idx, row in df.iterrows():
+            stock_id = row["stock_id"]
+            data = self.data_fetcher.get_institutional_investors(stock_id, days=1)
+
+            if not data:
+                net_today.append(np.nan)
+                info.append("資料不足")
+                continue
+
+            total_today = data.get("total", {}).get("today", 0)
+            foreign_today = data.get("foreign", {}).get("today", 0)
+            trust_today = data.get("investment_trust", {}).get("today", 0)
+            net_today.append(total_today)
+            info.append(f"外資{foreign_today:+d} 投信{trust_today:+d} 合計{total_today:+d}")
+
+        df["inst_today_net"] = net_today
+        df["inst_today_info"] = info
+
+        # 資料不足時保留 (避免誤殺)
+        mask = df["inst_today_net"].isna() | (df["inst_today_net"] >= self.min_net)
+        return df[mask].reset_index(drop=True)

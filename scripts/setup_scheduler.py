@@ -3,8 +3,9 @@
 設置定時執行任務 (macOS launchd)
 
 排程項目：
-1. 盤中篩選 (13:00, 13:20) - 今日訊號
-2. 盤後追蹤 (14:30) - 法人佈局追蹤
+1. 盤中篩選-左側 (13:00, 13:20) - 回調縮量吸籌
+2. 盤中篩選-右側 (13:05, 13:25) - 撒網抓強勢 (含散戶警示)
+3. 盤後追蹤 (14:30) - 法人佈局追蹤
 """
 import os
 import sys
@@ -13,9 +14,13 @@ import subprocess
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# 兩個排程任務
-PLIST_SCREENER = "com.stockscreener.plist"
+# 三個排程任務
+PLIST_SCREENER_LEFT = "com.stockscreener.left.plist"
+PLIST_SCREENER_RIGHT = "com.stockscreener.right.plist"
 PLIST_INSTITUTIONAL = "com.stockscreener.institutional.plist"
+
+# 舊版單一篩選任務 (向下相容用，install 時會清掉)
+PLIST_SCREENER_LEGACY = "com.stockscreener.plist"
 
 PLIST_DIR = Path.home() / "Library" / "LaunchAgents"
 
@@ -28,17 +33,35 @@ def get_python_path() -> str:
     return sys.executable
 
 
-def create_plist_screener():
-    """建立盤中篩選的 plist 檔案 (13:00, 13:20)"""
+def _build_screener_plist(label: str, mode: str, hour_minutes: list, log_basename: str) -> str:
+    """
+    生成盤中篩選 plist 內容
+    Args:
+        label: launchd Label
+        mode: 'left' 或 'right'
+        hour_minutes: [(hour, minute), ...] 觸發時間
+        log_basename: 日誌檔名 (不含副檔名)
+    """
     python_path = get_python_path()
 
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+    # 產生週一到週五 x 各時間點的 StartCalendarInterval 區塊
+    intervals = []
+    for hour, minute in hour_minutes:
+        for weekday in range(1, 6):  # 週一=1, 週五=5
+            intervals.append(
+                f"        <dict><key>Weekday</key><integer>{weekday}</integer>"
+                f"<key>Hour</key><integer>{hour}</integer>"
+                f"<key>Minute</key><integer>{minute}</integer></dict>"
+            )
+    intervals_xml = "\n".join(intervals)
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.stockscreener</string>
+    <string>{label}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -46,6 +69,8 @@ def create_plist_screener():
         <string>-m</string>
         <string>src.main</string>
         <string>--force</string>
+        <string>--mode</string>
+        <string>{mode}</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -53,25 +78,14 @@ def create_plist_screener():
 
     <key>StartCalendarInterval</key>
     <array>
-        <!-- 週一至週五 13:00 -->
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
-        <!-- 週一至週五 13:20 -->
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>20</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>20</integer></dict>
+{intervals_xml}
     </array>
 
     <key>StandardOutPath</key>
-    <string>{PROJECT_ROOT}/logs/screener.log</string>
+    <string>{PROJECT_ROOT}/logs/{log_basename}.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{PROJECT_ROOT}/logs/screener_error.log</string>
+    <string>{PROJECT_ROOT}/logs/{log_basename}_error.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -81,7 +95,26 @@ def create_plist_screener():
 </dict>
 </plist>
 """
-    return plist_content
+
+
+def create_plist_screener_left():
+    """左側策略 (回調吸籌) - 13:00, 13:20"""
+    return _build_screener_plist(
+        label="com.stockscreener.left",
+        mode="left",
+        hour_minutes=[(13, 0), (13, 20)],
+        log_basename="screener_left",
+    )
+
+
+def create_plist_screener_right():
+    """右側策略 (撒網抓強勢) - 13:05, 13:25 (錯開 5 分鐘避免併發)"""
+    return _build_screener_plist(
+        label="com.stockscreener.right",
+        mode="right",
+        hour_minutes=[(13, 5), (13, 25)],
+        log_basename="screener_right",
+    )
 
 
 def create_plist_institutional():
@@ -134,6 +167,34 @@ def create_plist_institutional():
     return plist_content
 
 
+def _install_plist(plist_filename: str, content: str, label: str):
+    """通用 plist 安裝邏輯"""
+    plist_path = PLIST_DIR / plist_filename
+    if plist_path.exists():
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+
+    with open(plist_path, "w") as f:
+        f.write(content)
+    print(f"\n已建立設定檔: {plist_path}")
+
+    result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  ✓ {label} 任務已載入")
+    else:
+        print(f"  ✗ 載入失敗: {result.stderr}")
+
+
+def _uninstall_plist(plist_filename: str, label: str):
+    """通用 plist 卸載邏輯"""
+    plist_path = PLIST_DIR / plist_filename
+    if plist_path.exists():
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        plist_path.unlink()
+        print(f"{label} 任務已卸載")
+    else:
+        print(f"沒有找到 {label} 任務")
+
+
 def install():
     """安裝定時任務"""
     print("=" * 50)
@@ -144,41 +205,31 @@ def install():
     PLIST_DIR.mkdir(parents=True, exist_ok=True)
     (PROJECT_ROOT / "logs").mkdir(parents=True, exist_ok=True)
 
-    # 安裝盤中篩選任務
-    plist_path_screener = PLIST_DIR / PLIST_SCREENER
-    if plist_path_screener.exists():
-        subprocess.run(["launchctl", "unload", str(plist_path_screener)], capture_output=True)
+    # 清除舊版單一篩選任務 (升級時)
+    legacy_path = PLIST_DIR / PLIST_SCREENER_LEGACY
+    if legacy_path.exists():
+        subprocess.run(["launchctl", "unload", str(legacy_path)], capture_output=True)
+        legacy_path.unlink()
+        print(f"\n已移除舊版設定檔: {legacy_path}")
 
-    with open(plist_path_screener, "w") as f:
-        f.write(create_plist_screener())
-    print(f"\n已建立盤中篩選設定檔: {plist_path_screener}")
+    # 左側策略 (回調吸籌)
+    _install_plist(PLIST_SCREENER_LEFT, create_plist_screener_left(), "左側-回調吸籌")
 
-    result = subprocess.run(["launchctl", "load", str(plist_path_screener)], capture_output=True, text=True)
-    if result.returncode == 0:
-        print("  ✓ 盤中篩選任務已載入")
-    else:
-        print(f"  ✗ 載入失敗: {result.stderr}")
+    # 右側策略 (撒網抓強勢 + 散戶警示)
+    _install_plist(PLIST_SCREENER_RIGHT, create_plist_screener_right(), "右側-撒網抓強勢")
 
-    # 安裝盤後法人追蹤任務
-    plist_path_inst = PLIST_DIR / PLIST_INSTITUTIONAL
-    if plist_path_inst.exists():
-        subprocess.run(["launchctl", "unload", str(plist_path_inst)], capture_output=True)
-
-    with open(plist_path_inst, "w") as f:
-        f.write(create_plist_institutional())
-    print(f"\n已建立法人追蹤設定檔: {plist_path_inst}")
-
-    result = subprocess.run(["launchctl", "load", str(plist_path_inst)], capture_output=True, text=True)
-    if result.returncode == 0:
-        print("  ✓ 法人追蹤任務已載入")
-    else:
-        print(f"  ✗ 載入失敗: {result.stderr}")
+    # 盤後法人追蹤
+    _install_plist(PLIST_INSTITUTIONAL, create_plist_institutional(), "法人追蹤")
 
     print("\n" + "=" * 50)
     print("排程時間:")
-    print("  【盤中篩選】週一至週五 13:00, 13:20")
-    print("  【法人追蹤】週一至週五 14:30")
+    print("  【左側-回調吸籌】 週一至週五 13:00, 13:20")
+    print("  【右側-撒網抓強勢】週一至週五 13:05, 13:25")
+    print("  【法人追蹤】     週一至週五 14:30")
     print(f"\n日誌檔案: {PROJECT_ROOT}/logs/")
+    print(f"  - screener_left.log    (左側策略)")
+    print(f"  - screener_right.log   (右側策略)")
+    print(f"  - institutional.log    (法人追蹤)")
     print("=" * 50)
 
     return True
@@ -186,22 +237,30 @@ def install():
 
 def uninstall():
     """卸載定時任務"""
-    plist_path_screener = PLIST_DIR / PLIST_SCREENER
-    plist_path_inst = PLIST_DIR / PLIST_INSTITUTIONAL
+    # 清舊版
+    legacy_path = PLIST_DIR / PLIST_SCREENER_LEGACY
+    if legacy_path.exists():
+        subprocess.run(["launchctl", "unload", str(legacy_path)], capture_output=True)
+        legacy_path.unlink()
+        print(f"舊版盤中篩選任務已卸載")
 
-    if plist_path_screener.exists():
-        subprocess.run(["launchctl", "unload", str(plist_path_screener)], capture_output=True)
-        plist_path_screener.unlink()
-        print("盤中篩選任務已卸載")
-    else:
-        print("沒有找到盤中篩選任務")
+    _uninstall_plist(PLIST_SCREENER_LEFT, "左側-回調吸籌")
+    _uninstall_plist(PLIST_SCREENER_RIGHT, "右側-撒網抓強勢")
+    _uninstall_plist(PLIST_INSTITUTIONAL, "法人追蹤")
 
-    if plist_path_inst.exists():
-        subprocess.run(["launchctl", "unload", str(plist_path_inst)], capture_output=True)
-        plist_path_inst.unlink()
-        print("法人追蹤任務已卸載")
-    else:
-        print("沒有找到法人追蹤任務")
+
+def _print_status(stdout: str, label_token: str, display_name: str):
+    """印出單一任務狀態"""
+    print(f"\n【{display_name}】")
+    found = False
+    for line in stdout.split("\n"):
+        if label_token in line:
+            print(f"  狀態: 已啟用")
+            print(f"  {line}")
+            found = True
+            break
+    if not found:
+        print("  狀態: 未啟用")
 
 
 def status():
@@ -212,27 +271,9 @@ def status():
     print("  定時任務狀態")
     print("=" * 50)
 
-    if "com.stockscreener" in result.stdout:
-        print("\n【盤中篩選】")
-        for line in result.stdout.split("\n"):
-            if "com.stockscreener" in line and "institutional" not in line:
-                print(f"  狀態: 已啟用")
-                print(f"  {line}")
-                break
-        else:
-            print("  狀態: 未啟用")
-    else:
-        print("\n【盤中篩選】狀態: 未啟用")
-
-    if "com.stockscreener.institutional" in result.stdout:
-        print("\n【法人追蹤】")
-        for line in result.stdout.split("\n"):
-            if "com.stockscreener.institutional" in line:
-                print(f"  狀態: 已啟用")
-                print(f"  {line}")
-                break
-    else:
-        print("\n【法人追蹤】狀態: 未啟用")
+    _print_status(result.stdout, "com.stockscreener.left", "左側-回調吸籌")
+    _print_status(result.stdout, "com.stockscreener.right", "右側-撒網抓強勢")
+    _print_status(result.stdout, "com.stockscreener.institutional", "法人追蹤")
 
     print("=" * 50)
 

@@ -8,6 +8,7 @@ import sys
 import logging
 from datetime import datetime
 import argparse
+import pandas as pd
 
 # 設置 Python path
 from pathlib import Path
@@ -86,7 +87,7 @@ def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left
     # 終端機顯示最終結果
     TerminalDisplay.display_results(results, institutional_data)
 
-    # 右側策略: 額外顯示漲幅排名
+    # 右側策略: 額外顯示漲幅排名 + 散戶警示資訊
     if mode == "right" and not results.empty and "rank" in results.columns:
         print("\n" + "=" * 60)
         print("  漲幅排名 (留強砍弱參考)")
@@ -96,7 +97,17 @@ def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left
             sid = row.get("stock_id", "")
             chg = row.get("change_pct", 0)
             rank = row.get("rank", 0)
-            print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%")
+            vol_ratio = row.get("vol_vs_yesterday")
+            inst_info = row.get("inst_today_info", "")
+
+            extra = []
+            if vol_ratio is not None and not (isinstance(vol_ratio, float) and pd.isna(vol_ratio)):
+                extra.append(f"量{vol_ratio:.1f}x昨")
+            if inst_info:
+                extra.append(inst_info)
+            extra_str = f"  | {' | '.join(extra)}" if extra else ""
+
+            print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%{extra_str}")
         print("=" * 60)
 
     # 輸出 CSV
@@ -240,9 +251,10 @@ def main():
     9. 換手率  10. 大戶持股  11. 法人吸籌
     (量價健康度: 排除竭盡量，保留健康量/換手量)
 
-  --mode right 右側: 撒網抓強勢 = 已經在漲才追，留強砍弱
-    1. 市值篩選  2. 漲幅>=3%  3. 量比>1.5
-    4. 均線多頭  5. 強於大盤  6. 尾盤創新高
+  --mode right 右側 v2.0: 撒網抓強勢 = 已經在漲才追，留強砍弱 (含散戶警示)
+    1. 市值篩選  2. 均線多頭  3. 量比>1
+    4. 漲幅>=3%  5. 量能正常 (1.2-3x昨量, 排除竭盡量)
+    6. 法人未賣超 (排除「大漲+法人賣」=主力倒貨給散戶)
     結果按漲幅排名，方便決定留誰砍誰
 
 範例:
@@ -307,7 +319,7 @@ def main():
     if args.mode == "left":
         print("  基本面 + 技術面 + 籌碼面 多維度篩選")
     else:
-        print("  爆量突破 + 均線多頭 + 強於大盤 → 留強砍弱")
+        print("  爆量突破 + 均線多頭 + 散戶警示 → 留強砍弱")
     print("=" * 60 + "\n")
 
     # 執行

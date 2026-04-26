@@ -29,8 +29,8 @@ from src.screeners.filters import (
     PriceChangeScreener,
     VolumeRatioScreener,
     MovingAverageScreener,
-    RelativeStrengthScreener,
-    IntradayHighScreener,
+    VolumeVsYesterdayScreener,
+    InstitutionalNotSellingScreener,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class MarketMonitor:
 
 STRATEGY_NAMES = {
     "left": "回調縮量吸籌策略 v4.0",
-    "right": "撒網抓強勢策略 v1.0",
+    "right": "撒網抓強勢策略 v2.0 (精簡版)",
 }
 
 
@@ -218,28 +218,29 @@ class ScreeningPipeline:
 
     def _init_right_screeners(self) -> List:
         """
-        右側策略: 撒網抓強勢 (6 步)
-        邏輯: 今天在噴 → 爆量確認 → 均線多頭 → 強於大盤 → 尾盤仍強
+        右側策略: 撒網抓強勢 v2.0 (6 步，含散戶警示)
+        邏輯: 排除小型股 → 趨勢向上 → 爆量 → 上漲明顯 → 量能正常 → 法人沒在賣
+        散戶警示: 量能異常爆增 / 法人賣超 = 疑似主力倒貨給散戶 → 排除
         操作: 結果按漲幅排名，留強砍弱
         """
         screeners = [
             # 步驟1: 市值篩選 (排除小型股)
             MarketCapScreener(self.data_fetcher),
 
-            # 步驟2: 當日漲幅 >= 3% (已經在噴)
-            PriceChangeScreener(),
-
-            # 步驟3: 量比 > 1.5 (爆量確認，有人在買)
-            VolumeRatioScreener(self.data_fetcher),
-
-            # 步驟4: 均線多頭排列 (趨勢向上)
+            # 步驟2: 均線多頭排列 (趨勢向上)
             MovingAverageScreener(self.data_fetcher),
 
-            # 步驟5: 強於大盤 (個股漲幅 > 大盤漲幅)
-            RelativeStrengthScreener(self.data_fetcher),
+            # 步驟3: 量比放大 (突然量大)
+            VolumeRatioScreener(self.data_fetcher),
 
-            # 步驟6: 尾盤創新高 (收盤前仍在高點，不是沖高回落)
-            IntradayHighScreener(),
+            # 步驟4: 當日漲幅 (上漲趨勢明顯)
+            PriceChangeScreener(),
+
+            # 步驟5: 量能正常 (今日/昨日量 在合理區間，過大=可能竭盡量)
+            VolumeVsYesterdayScreener(self.data_fetcher),
+
+            # 步驟6: 法人沒在賣 (排除「大漲+法人賣超」=疑似倒貨給散戶)
+            InstitutionalNotSellingScreener(self.data_fetcher),
         ]
 
         # 動態設定 step_number (1-6)

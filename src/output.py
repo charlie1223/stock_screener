@@ -334,6 +334,8 @@ class CSVExporter:
             "rank", "relative_strength", "intraday_strong",
             # 右側策略 v2 散戶警示欄位
             "vol_vs_yesterday", "inst_today_net", "inst_today_info",
+            # 融資資料 (散戶警示)
+            "margin_prev", "margin_today", "margin_change", "margin_change_pct", "margin_info",
             # 三大法人欄位
             "foreign_today", "foreign_sum", "trust_today", "trust_sum",
             "dealer_today", "dealer_sum", "total_today", "total_sum"
@@ -407,6 +409,8 @@ class CSVExporter:
             "higher_lows_info", "higher_lows_confirms",
             # 右側策略 v2 散戶警示欄位
             "vol_vs_yesterday", "inst_today_net", "inst_today_info",
+            # 融資資料 (散戶警示)
+            "margin_prev", "margin_today", "margin_change", "margin_change_pct", "margin_info",
         ]
 
         exported_files = []

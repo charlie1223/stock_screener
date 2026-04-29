@@ -29,6 +29,7 @@ class DataFetcher:
         self._stock_info_cache = {}
         self._hist_data_cache = {}
         self._industry_cache = {}       # 產業分類快取
+        self._margin_cache = None       # 融資融券 (TWSE TWT93U) 快取
         self._finmind_available = True  # FinMind API 是否可用
         self._finmind_fail_count = 0    # 連續失敗次數
         self._max_fail_count = 3        # 超過此次數切換備援
@@ -885,6 +886,76 @@ class DataFetcher:
         except Exception as e:
             logger.debug(f"獲取流通股數失敗: {e}")
             return pd.DataFrame()
+
+    def get_margin_trading(self) -> pd.DataFrame:
+        """
+        獲取全市場融資融券資料 (TWSE TWT93U, 一次抓完全部個股)
+        Returns: DataFrame with columns
+            [stock_id, stock_name, margin_prev, margin_today, margin_change, margin_change_pct]
+        - margin_prev: 前日融資餘額 (張)
+        - margin_today: 今日融資餘額 (張)
+        - margin_change: 融資增減張數 (今日 - 前日)
+        - margin_change_pct: 融資增減比例 % ((今日-前日)/前日 * 100)
+        說明:
+        - 融資 = 散戶舉債買股
+        - 融資暴增 = 散戶蜂擁進場 → 退場警示
+        - 資料每交易日盤後公布 (T-day 收盤後)
+        """
+        if self._margin_cache is not None:
+            return self._margin_cache
+
+        # 找最近的交易日 (往回試 5 天)
+        for offset in range(0, 6):
+            date = (datetime.now() - timedelta(days=offset)).strftime("%Y%m%d")
+            url = f"https://www.twse.com.tw/exchangeReport/TWT93U?response=json&date={date}"
+            try:
+                r = requests.get(url, timeout=15).json()
+                if r.get("stat") != "OK" or not r.get("data"):
+                    continue
+
+                fields = r.get("fields", [])
+                rows = []
+                for row in r["data"]:
+                    if not row or len(row) < 7:
+                        continue
+                    stock_id = str(row[0]).strip()
+                    stock_name = str(row[1]).strip()
+                    if not stock_id:
+                        continue
+
+                    def parse_int(s):
+                        try:
+                            return int(str(s).replace(",", "").strip() or "0")
+                        except (ValueError, AttributeError):
+                            return 0
+
+                    # 欄位順序: [代號, 名稱, 前日餘額, 賣出, 買進, 現券, 今日餘額, ...]
+                    margin_prev = parse_int(row[2])
+                    margin_today = parse_int(row[6])
+                    margin_change = margin_today - margin_prev
+                    margin_change_pct = (margin_change / margin_prev * 100) if margin_prev > 0 else 0.0
+
+                    rows.append({
+                        "stock_id": stock_id,
+                        "stock_name": stock_name,
+                        "margin_prev": margin_prev,
+                        "margin_today": margin_today,
+                        "margin_change": margin_change,
+                        "margin_change_pct": round(margin_change_pct, 2),
+                    })
+
+                df = pd.DataFrame(rows)
+                logger.info(f"已獲取 {date} 融資融券資料: {len(df)} 檔")
+                self._margin_cache = df
+                return df
+
+            except Exception as e:
+                logger.debug(f"TWSE 融資資料 {date} 獲取失敗: {e}")
+                continue
+
+        logger.warning("無法獲取融資融券資料")
+        self._margin_cache = pd.DataFrame()
+        return self._margin_cache
 
     def get_benchmark_change(self) -> Optional[float]:
         """獲取大盤 (加權指數) 當日漲跌幅"""

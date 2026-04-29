@@ -31,6 +31,7 @@ from src.screeners.filters import (
     MovingAverageScreener,
     VolumeVsYesterdayScreener,
     InstitutionalNotSellingScreener,
+    MarginNotSurgingScreener,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ class MarketMonitor:
 
 STRATEGY_NAMES = {
     "left": "回調縮量吸籌策略 v4.0",
-    "right": "撒網抓強勢策略 v2.0 (精簡版)",
+    "right": "撒網抓強勢策略 v2.1 (含散戶警示三件組)",
 }
 
 
@@ -218,9 +219,9 @@ class ScreeningPipeline:
 
     def _init_right_screeners(self) -> List:
         """
-        右側策略: 撒網抓強勢 v2.0 (6 步，含散戶警示)
-        邏輯: 排除小型股 → 趨勢向上 → 爆量 → 上漲明顯 → 量能正常 → 法人沒在賣
-        散戶警示: 量能異常爆增 / 法人賣超 = 疑似主力倒貨給散戶 → 排除
+        右側策略: 撒網抓強勢 v2.1 (7 步，含散戶警示三件組)
+        邏輯: 排除小型股 → 趨勢向上 → 爆量 → 上漲明顯 → 量能正常 → 法人沒在賣 → 融資沒暴增
+        散戶警示三件組: 量能異常爆增 / 法人賣超 / 融資暴增 = 疑似主力倒貨給散戶 → 排除
         操作: 結果按漲幅排名，留強砍弱
         """
         screeners = [
@@ -241,9 +242,12 @@ class ScreeningPipeline:
 
             # 步驟6: 法人沒在賣 (排除「大漲+法人賣超」=疑似倒貨給散戶)
             InstitutionalNotSellingScreener(self.data_fetcher),
+
+            # 步驟7: 融資沒暴增 (排除「融資餘額暴增」=散戶蜂擁進場 = 退場警示)
+            MarginNotSurgingScreener(self.data_fetcher),
         ]
 
-        # 動態設定 step_number (1-6)
+        # 動態設定 step_number (1-7)
         for i, screener in enumerate(screeners, 1):
             screener.step_number = i
 

@@ -108,11 +108,15 @@ def create_plist_screener_left():
 
 
 def create_plist_screener_right():
-    """右側策略 (撒網抓強勢) - 13:05, 13:25 (錯開 5 分鐘避免併發)"""
+    """
+    右側策略 (撒網抓強勢) - 13:05, 13:25, 14:35
+    - 13:05, 13:25: 盤中即時篩選 (融資資料用 T-1)
+    - 14:35: 盤後完整篩選 (融資資料用當日，比左側 14:30 晚 5 分避併發)
+    """
     return _build_screener_plist(
         label="com.stockscreener.right",
         mode="right",
-        hour_minutes=[(13, 5), (13, 25)],
+        hour_minutes=[(13, 5), (13, 25), (14, 35)],
         log_basename="screener_right",
     )
 
@@ -224,7 +228,7 @@ def install():
     print("\n" + "=" * 50)
     print("排程時間:")
     print("  【左側-回調吸籌】 週一至週五 13:00, 13:20")
-    print("  【右側-撒網抓強勢】週一至週五 13:05, 13:25")
+    print("  【右側-撒網抓強勢】週一至週五 13:05, 13:25 (盤中), 14:35 (盤後+融資)")
     print("  【法人追蹤】     週一至週五 14:30")
     print(f"\n日誌檔案: {PROJECT_ROOT}/logs/")
     print(f"  - screener_left.log    (左側策略)")

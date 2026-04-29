@@ -99,12 +99,15 @@ def run_screener(force: bool = False, scan_pool: bool = False, mode: str = "left
             rank = row.get("rank", 0)
             vol_ratio = row.get("vol_vs_yesterday")
             inst_info = row.get("inst_today_info", "")
+            margin_info = row.get("margin_info", "")
 
             extra = []
             if vol_ratio is not None and not (isinstance(vol_ratio, float) and pd.isna(vol_ratio)):
                 extra.append(f"量{vol_ratio:.1f}x昨")
             if inst_info:
                 extra.append(inst_info)
+            if margin_info and margin_info != "資料不足":
+                extra.append(margin_info)
             extra_str = f"  | {' | '.join(extra)}" if extra else ""
 
             print(f"  #{rank:<3} {sid} {name:<8} 漲幅 {chg:+.1f}%{extra_str}")
@@ -251,10 +254,11 @@ def main():
     9. 換手率  10. 大戶持股  11. 法人吸籌
     (量價健康度: 排除竭盡量，保留健康量/換手量)
 
-  --mode right 右側 v2.0: 撒網抓強勢 = 已經在漲才追，留強砍弱 (含散戶警示)
+  --mode right 右側 v2.1: 撒網抓強勢 = 已經在漲才追，留強砍弱 (含散戶警示三件組)
     1. 市值篩選  2. 均線多頭  3. 量比>1
     4. 漲幅>=3%  5. 量能正常 (1.2-3x昨量, 排除竭盡量)
     6. 法人未賣超 (排除「大漲+法人賣」=主力倒貨給散戶)
+    7. 融資未暴增 (排除「融資餘額暴增」=散戶蜂擁進場警示)
     結果按漲幅排名，方便決定留誰砍誰
 
 範例:

@@ -127,4 +127,7 @@ SCREENING_PARAMS = {
     "vol_vs_yesterday_max": 3.0,          # 今日量超過昨日 3 倍 = 異常爆量，排除
     # 大漲 + 法人賣超 = 散戶在接、主力在出
     "inst_min_today_net": 0,              # 三大法人合計買賣超門檻 (張)，0=不能賣超
+    # 融資暴增 = 散戶蜂擁進場、主力倒貨
+    "margin_surge_max_pct": 5.0,          # 今日融資增幅 % 上限，超過 = 散戶在衝，排除
+    "margin_min_base_shares": 100,        # 前日融資餘額門檻 (張)，太小視為雜訊不判斷
 }

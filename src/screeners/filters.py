@@ -1763,6 +1763,69 @@ class VolumeVsYesterdayScreener(BaseScreener):
         return df[mask].reset_index(drop=True)
 
 
+class MarginNotSurgingScreener(BaseScreener):
+    """
+    融資未暴增篩選 - 排除「融資餘額暴增」(散戶蜂擁進場 = 主力倒貨給散戶的訊號)
+    邏輯:
+    - 融資增幅 (今日餘額 / 前日餘額 - 1) >= 門檻 → 排除
+    - 融資前日餘額太小 (< 100 張) 視為雜訊，不判斷直接放行
+    """
+
+    def __init__(self, data_fetcher):
+        max_pct = SCREENING_PARAMS.get("margin_surge_max_pct", 5.0)
+        min_base = SCREENING_PARAMS.get("margin_min_base_shares", 100)
+        super().__init__(name=f"融資未暴增 (< {max_pct}%)", step_number=7)
+        self.data_fetcher = data_fetcher
+        self.max_pct = max_pct
+        self.min_base = min_base
+        self._margin_data = None
+
+    def screen(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        # 一次抓全市場融資資料 (快取)
+        if self._margin_data is None:
+            self._margin_data = self.data_fetcher.get_margin_trading()
+
+        if self._margin_data.empty:
+            # 無資料時保留所有股票，避免誤殺
+            df["margin_change"] = np.nan
+            df["margin_change_pct"] = np.nan
+            df["margin_info"] = "資料不足"
+            return df
+
+        # merge 融資資料
+        margin = self._margin_data[["stock_id", "margin_prev", "margin_today", "margin_change", "margin_change_pct"]]
+        df = df.merge(margin, on="stock_id", how="left")
+
+        # 組描述欄位
+        def fmt_info(row):
+            if pd.isna(row.get("margin_change")):
+                return "資料不足"
+            chg = int(row["margin_change"])
+            pct = row["margin_change_pct"]
+            today = int(row["margin_today"])
+            sign = "+" if chg >= 0 else ""
+            return f"融資{sign}{chg:,}張 ({sign}{pct:.1f}%) 餘額{today:,}"
+
+        df["margin_info"] = df.apply(fmt_info, axis=1)
+
+        # 篩選邏輯:
+        # - 無資料 → 保留 (不誤殺)
+        # - 餘額太小 → 保留 (雜訊)
+        # - 增幅 < 門檻 → 保留
+        # - 增幅 >= 門檻 → 排除 (散戶在衝)
+        no_data = df["margin_change_pct"].isna()
+        small_base = df["margin_prev"].fillna(0) < self.min_base
+        not_surging = df["margin_change_pct"].fillna(0) < self.max_pct
+
+        mask = no_data | small_base | not_surging
+        return df[mask].reset_index(drop=True)
+
+
 class InstitutionalNotSellingScreener(BaseScreener):
     """
     法人沒在出貨篩選 - 排除「大漲 + 法人賣超」(疑似散戶在接、主力倒貨)

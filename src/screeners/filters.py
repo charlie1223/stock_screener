@@ -1122,8 +1122,8 @@ class VolumeShrinkScreener(BaseScreener):
             # 條件2: 當前量 < 均量的門檻比例
             is_low_volume = volume_ratio < self.shrink_threshold
 
-            # 綜合判斷 (兩個條件至少符合一個)
-            is_valid = has_consecutive_shrink or is_low_volume
+            # 綜合判斷 (兩個條件須同時成立，避免單日爆量後量縮就誤判為連續縮量)
+            is_valid = has_consecutive_shrink and is_low_volume
 
             valid_stocks.append(is_valid)
             volume_ratio_list.append(volume_ratio)
@@ -1203,7 +1203,8 @@ class QuietAccumulationScreener(BaseScreener):
                 trust_sum > 0
             )
 
-            is_valid = foreign_valid or trust_valid
+            # 外資和投信須同時連續買超才算通過 (單一法人買超訊號純度不足)
+            is_valid = foreign_valid and trust_valid
 
             valid_stocks.append(is_valid)
             foreign_consecutive_list.append(foreign_consecutive)
@@ -1829,12 +1830,15 @@ class MarginNotSurgingScreener(BaseScreener):
 class InstitutionalNotSellingScreener(BaseScreener):
     """
     法人沒在出貨篩選 - 排除「大漲 + 法人賣超」(疑似散戶在接、主力倒貨)
-    判斷邏輯: 三大法人合計買賣超 >= 門檻 (預設 0，即沒賣超)
+    判斷邏輯: 近3日三大法人合計買賣超累計淨額 >= 門檻 (預設 0，即沒賣超)
+    改用3日累計而非單日淨額，避免單日雜訊 (法人常見的小幅調節) 造成誤判
     """
+
+    NET_WINDOW_DAYS = 3
 
     def __init__(self, data_fetcher):
         min_net = SCREENING_PARAMS.get("inst_min_today_net", 0)
-        super().__init__(name=f"法人未賣超 (>= {min_net} 張)", step_number=6)
+        super().__init__(name=f"法人未賣超 (近{self.NET_WINDOW_DAYS}日累計 >= {min_net} 張)", step_number=6)
         self.data_fetcher = data_fetcher
         self.min_net = min_net
 
@@ -1848,18 +1852,18 @@ class InstitutionalNotSellingScreener(BaseScreener):
         info = []
         for idx, row in df.iterrows():
             stock_id = row["stock_id"]
-            data = self.data_fetcher.get_institutional_investors(stock_id, days=1)
+            data = self.data_fetcher.get_institutional_investors(stock_id, days=self.NET_WINDOW_DAYS)
 
             if not data:
                 net_today.append(np.nan)
                 info.append("資料不足")
                 continue
 
-            total_today = data.get("total", {}).get("today", 0)
-            foreign_today = data.get("foreign", {}).get("today", 0)
-            trust_today = data.get("investment_trust", {}).get("today", 0)
-            net_today.append(total_today)
-            info.append(f"外資{foreign_today:+d} 投信{trust_today:+d} 合計{total_today:+d}")
+            total_sum = data.get("total", {}).get("sum_days", 0)
+            foreign_sum = data.get("foreign", {}).get("sum_days", 0)
+            trust_sum = data.get("investment_trust", {}).get("sum_days", 0)
+            net_today.append(total_sum)
+            info.append(f"近{self.NET_WINDOW_DAYS}日 外資{foreign_sum:+d} 投信{trust_sum:+d} 合計{total_sum:+d}")
 
         df["inst_today_net"] = net_today
         df["inst_today_info"] = info

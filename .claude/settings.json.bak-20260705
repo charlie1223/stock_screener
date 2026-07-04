@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/bin/pip install *)",
+      "Bash(./venv/bin/python -c \"import pytest, pandas, numpy; print\\('ok', pytest.__version__\\)\")",
+      "Bash(ls -la venv/bin/python*; file venv/bin/python 2>&1)",
+      "Read(//Users/qiuyixuan/stock_screener/venv/bin/**)",
+      "Bash(python3 -m venv venv)",
+      "Bash(venv/bin/pip install *)",
+      "Bash(venv/bin/python -c \"import pytest, pandas, numpy; print\\('ok', pytest.__version__\\)\")",
+      "Read(//Users/qiuyixuan/.claude/**)",
+      "Read(//Users/qiuyixuan/.claude/skills/**)",
+      "Read(//Users/qiuyixuan/.claude/plugins/**)",
+      "Bash(echo \"===GLOBAL settings.json===\"; cat ~/.claude/settings.json 2>/dev/null; echo; echo \"===PROJECT .claude/===\"; ls -la /Users/qiuyixuan/stock_screener/.claude/ 2>/dev/null; echo \"===PROJECT settings.json===\"; cat /Users/qiuyixuan/stock_screener/.claude/settings.json 2>/dev/null; echo \"===PROJECT settings.local.json===\"; cat /Users/qiuyixuan/stock_screener/.claude/settings.local.json 2>/dev/null)",
+      "Read(//Users/qiuyixuan/**)",
+      "Bash(echo \"===PROJECT ROOT===\"; ls -la /Users/qiuyixuan/stock_screener/; echo \"===project CLAUDE.md?===\"; ls /Users/qiuyixuan/stock_screener/CLAUDE.md 2>/dev/null && wc -l /Users/qiuyixuan/stock_screener/CLAUDE.md; echo \"===global CLAUDE.md size===\"; wc -l ~/.claude/CLAUDE.md; echo \"===MEMORY dir===\"; ls -la /Users/qiuyixuan/.claude/projects/-Users-qiuyixuan-stock-screener/memory/ 2>/dev/null)",
+      "Bash(venv/bin/python -m pytest tests/test_volume_shrink_screener.py -v)",
+      "Bash(venv/bin/python -m pytest tests/test_quiet_accumulation_screener.py -v)",
+      "Bash(venv/bin/python -m pytest tests/test_institutional_not_selling_screener.py -v)",
+      "Bash(venv/bin/python -m pytest tests/ -v)",
+      "Bash(venv/bin/python -m py_compile src/screeners/filters.py)",
+      "Bash(npm view *)",
+      "Bash(cp ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak-20260705)",
+      "Bash(cp ~/.claude.json ~/.claude.json.bak-20260705)",
+      "Bash(cp ~/.claude/settings.json ~/.claude/settings.json.bak-20260705)",
+      "Bash(cp /Users/qiuyixuan/stock_screener/.claude/settings.json /Users/qiuyixuan/stock_screener/.claude/settings.json.bak-20260705)",
+      "Bash(cp /Users/qiuyixuan/stock_screener/.claude/settings.local.json /Users/qiuyixuan/stock_screener/.claude/settings.local.json.bak-20260705)"
+    ]
+  }
+}
